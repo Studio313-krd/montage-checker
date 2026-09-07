@@ -19,10 +19,10 @@ artifacts/
 appsettings.Local.json
 
 # Runtime data
-data/
-logs/
-backups/
-screenshots/
+/data/
+/logs/
+/backups/
+/screenshots/
 *.db
 *.db-shm
 *.db-wal
