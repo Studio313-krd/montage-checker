@@ -1,0 +1,181 @@
+name: montage-monitor
+
+x-logging: &default-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-database-environment: &database-environment
+  PGHOST: postgres
+  PGPORT: "5432"
+  PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
+  PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+
+services:
+  postgres:
+    image: postgres:18.6-alpine3.23
+    restart: unless-stopped
+    stop_grace_period: 1m
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+    networks: [internal]
+
+  server:
+    image: montage-monitor-server:${APP_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: src/MontageMonitor.Server/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+      ConnectionStrings__PostgreSQL: Host=postgres;Port=5432;Database=${POSTGRES_DB:?POSTGRES_DB is required};Username=${POSTGRES_USER:?POSTGRES_USER is required};Password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      Security__JwtSigningKey: ${JWT_SIGNING_KEY:?JWT_SIGNING_KEY is required}
+      Security__JwtIssuer: ${JWT_ISSUER:-MontageMonitor.Server}
+      Security__JwtAudience: ${JWT_AUDIENCE:-MontageMonitor.Web}
+      Bootstrap__OwnerLogin: ${OWNER_LOGIN:-}
+      Bootstrap__OwnerPassword: ${OWNER_PASSWORD:-}
+      Bootstrap__OwnerDisplayName: ${OWNER_DISPLAY_NAME:-Владелец}
+      Company__TimeZone: ${COMPANY_TIME_ZONE:-Europe/Moscow}
+      ScreenshotStorage__RootPath: /data/screenshots
+      ScreenshotStorage__MaxUploadBytes: ${SCREENSHOT_MAX_UPLOAD_BYTES:-8388608}
+      DataProtection__KeysPath: /data/keys
+      Database__ApplyMigrationsOnStartup: "true"
+      Logging__Console__FormatterName: json
+      DOTNET_EnableDiagnostics: "0"
+    volumes:
+      - screenshots_data:/data/screenshots
+      - data_protection_keys:/data/keys
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+    networks: [internal]
+
+  backup:
+    image: montage-monitor-backup:${APP_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: infra/backup/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      <<: *database-environment
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETRY_SECONDS: ${BACKUP_RETRY_SECONDS:-300}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_HEALTH_GRACE_SECONDS: ${BACKUP_HEALTH_GRACE_SECONDS:-1800}
+      BACKUP_ON_START: ${BACKUP_ON_START:-true}
+      BACKUP_SCREENSHOTS: ${BACKUP_SCREENSHOTS:-false}
+    volumes:
+      - backups:/backups
+      - screenshots_data:/screenshots:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/montage-backup-health"]
+      interval: 1m
+      timeout: 15s
+      retries: 3
+      start_period: 2m
+    logging: *default-logging
+    networks: [internal]
+
+  restore:
+    image: montage-monitor-backup:${APP_VERSION:-latest}
+    profiles: [tools]
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["/usr/local/bin/montage-restore"]
+    environment:
+      <<: *database-environment
+      RESTORE_FILE: ${RESTORE_FILE:-}
+      RESTORE_CONFIRM: ${RESTORE_CONFIRM:-}
+    volumes:
+      - backups:/backups:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [internal]
+
+  caddy:
+    image: montage-monitor-caddy:${APP_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: infra/caddy/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MONITOR_DOMAIN: ${MONITOR_DOMAIN:?MONITOR_DOMAIN is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+    networks: [edge, internal]
+
+volumes:
+  postgres_data:
+  screenshots_data:
+  backups:
+  data_protection_keys:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+  internal:
+    internal: true

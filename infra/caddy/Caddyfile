@@ -1,0 +1,25 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$MONITOR_DOMAIN} {
+	encode zstd gzip
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+	}
+	log {
+		output stdout
+		format json
+	}
+	reverse_proxy server:8080 {
+		health_uri /health/live
+		health_interval 30s
+		health_timeout 5s
+		fail_duration 30s
+		max_fails 3
+	}
+}

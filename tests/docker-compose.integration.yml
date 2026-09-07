@@ -1,0 +1,8 @@
+services:
+  server:
+    ports:
+      - "127.0.0.1:${INTEGRATION_PORT:?INTEGRATION_PORT is required}:8080"
+    networks: [internal, integration]
+
+networks:
+  integration:
