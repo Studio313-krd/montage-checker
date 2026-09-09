@@ -72,6 +72,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Text = "MontageMonitor работает",
             Visible = true,
         };
+        _notifyIcon.MouseClick += (_, eventArgs) =>
+        {
+            if (eventArgs.Button == MouseButtons.Left)
+            {
+                _menu.Show(Cursor.Position);
+            }
+        };
         _notifyIcon.DoubleClick += async (_, _) =>
         {
             if (_runtime is null)
