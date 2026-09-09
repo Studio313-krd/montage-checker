@@ -1,6 +1,6 @@
 # PostgreSQL schema
 
-Схема MontageMonitor создаётся последовательными EF Core migrations; актуальная миграция `RemoveAgentEnrollmentTokens` удаляет устаревшие одноразовые коды после перехода на вход Agent по логину и паролю. Имена таблиц, колонок, ключей и индексов используют `snake_case`. Все моменты времени хранятся как PostgreSQL `timestamp with time zone`; .NET-модели используют `DateTimeOffset` и UTC.
+Схема MontageMonitor создаётся последовательными EF Core migrations; актуальная миграция `RemoveAgentEnrollmentTokens` удаляет устаревшие одноразовые коды после перехода на выбор сотрудника и вход по паролю. Имена таблиц, колонок, ключей и индексов используют `snake_case`. Все моменты времени хранятся как PostgreSQL `timestamp with time zone`; .NET-модели используют `DateTimeOffset` и UTC.
 
 ## Таблицы
 

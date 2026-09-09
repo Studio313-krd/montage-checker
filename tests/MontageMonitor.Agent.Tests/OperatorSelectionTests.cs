@@ -75,17 +75,27 @@ public sealed class OperatorSelectionTests
     }
 
     [Theory]
-    [InlineData("editor", "1234", true)]
-    [InlineData(" editor ", "0000", true)]
-    [InlineData("", "1234", false)]
-    [InlineData("editor", "123", false)]
-    [InlineData("editor", "12a4", false)]
-    public void AgentLoginInput_RequiresLoginAndFourDigitPassword(
-        string login,
+    [InlineData(true, "1234", true)]
+    [InlineData(true, "0000", true)]
+    [InlineData(false, "1234", false)]
+    [InlineData(true, "123", false)]
+    [InlineData(true, "12a4", false)]
+    public void AgentLoginInput_RequiresEmployeeAndFourDigitPassword(
+        bool hasEmployee,
         string password,
         bool expected)
     {
-        Assert.Equal(expected, AgentLoginInput.IsValid(login, password));
+        Assert.Equal(expected, AgentLoginInput.IsValid(hasEmployee ? Guid.NewGuid() : null, password));
+    }
+
+    [Theory]
+    [InlineData("IDDQD", true)]
+    [InlineData("iddqd", false)]
+    [InlineData("IDDQ", false)]
+    [InlineData("1234", false)]
+    public void ShutdownPassword_AcceptsOnlyExpectedValue(string password, bool expected)
+    {
+        Assert.Equal(expected, ShutdownDialog.PasswordMatches(password));
     }
 
     private static MonitoringDbContext CreateDbContext()

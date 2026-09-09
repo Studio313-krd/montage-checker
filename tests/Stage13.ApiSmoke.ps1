@@ -93,7 +93,8 @@ function New-EmployeeAndAgentLogin {
         [string]$Name,
         [string]$Suffix,
         [hashtable]$AdminHeaders,
-        [string]$AgentVersion = "0.9.0"
+        [string]$AgentVersion = "0.9.0",
+        [switch]$UseLegacyLogin
     )
 
     $employee = Invoke-Json POST "/api/employees" @{
@@ -111,12 +112,17 @@ function New-EmployeeAndAgentLogin {
         Select-Object -ExpandProperty password)
     Assert-True ($password -match '^\d{4}$') "админка не вернула четырёхзначный пароль Agent"
     $loginRequest = @{
-        login = $employee.login
         password = $password
         machineName = "TEST-PC-$($Suffix.ToUpperInvariant())"
         windowsUser = "test-user"
         operatingSystem = "Windows integration"
         agentVersion = $AgentVersion
+    }
+    if ($UseLegacyLogin) {
+        $loginRequest.login = $employee.login
+    }
+    else {
+        $loginRequest.employeeId = $employee.id
     }
     $agentLogin = Invoke-Json POST "/api/agent/login" $loginRequest
     [pscustomobject]@{
@@ -135,7 +141,17 @@ $adminHeaders = @{ Authorization = "Bearer $($owner.accessToken)" }
 $suffix = [guid]::NewGuid().ToString("N").Substring(0, 10)
 $first = New-EmployeeAndAgentLogin "Монтажёр Integration 1" "a-$suffix" $adminHeaders
 $second = New-EmployeeAndAgentLogin "Монтажёр Integration 2" "b-$suffix" $adminHeaders
-$legacy = New-EmployeeAndAgentLogin "Монтажёр Legacy" "legacy-$suffix" $adminHeaders "0.8.0"
+$legacy = New-EmployeeAndAgentLogin `
+    "Монтажёр Legacy" "legacy-$suffix" $adminHeaders "0.8.0" -UseLegacyLogin
+
+$loginOptions = Invoke-Json GET "/api/agent/login-options" $null
+$publicEmployees = @($loginOptions.employees)
+Assert-True ($publicEmployees.Count -ge 3) "окно входа не получило список активных сотрудников"
+$firstPublicEmployee = $publicEmployees | Where-Object { $_.employeeId -eq $first.Employee.id }
+Assert-True ($null -ne $firstPublicEmployee) "новый сотрудник отсутствует в списке окна входа"
+Assert-True ($firstPublicEmployee.name -eq $first.Employee.name) "в списке входа отображается неверное имя"
+Assert-True ($null -eq $firstPublicEmployee.PSObject.Properties["login"]) `
+    "публичный список сотрудников не должен раскрывать логины"
 
 $wrongLoginRequest = $first.LoginRequest.Clone()
 $wrongLoginRequest.password = if ($first.Password -eq "0000") { "0001" } else { "0000" }
@@ -155,6 +171,12 @@ $legacyOperatorContract = Invoke-Json POST "/api/agent/operator-session" @{
     pin = $first.Password
 } $firstDeviceHeaders
 Assert-True ($legacyOperatorContract.employeeId -eq $first.Employee.id) "Agent 0.9.1 не смог подтвердить старый формат выбора"
+$loginOperatorContract = Invoke-Json POST "/api/agent/operator-session" @{
+    login = $first.Employee.login
+    password = $first.Password
+} $firstDeviceHeaders
+Assert-True ($loginOperatorContract.employeeId -eq $first.Employee.id) `
+    "Agent 0.10.0 не смог подтвердить выбор по логину"
 
 $eventId = [guid]::NewGuid()
 $heartbeat = @{
@@ -189,7 +211,7 @@ $wrongPasswordStatus = Get-HttpStatus POST "/api/agent/operator-session" @{
 } $firstDeviceHeaders
 Assert-True ($wrongPasswordStatus -eq 401) "неверный пароль должен быть отклонён"
 $firstOperatorSession = Invoke-Json POST "/api/agent/operator-session" @{
-    login = $second.Employee.login
+    employeeId = $second.Employee.id
     password = $second.Password
 } $firstDeviceHeaders
 Assert-True ($firstOperatorSession.employeeId -eq $second.Employee.id) "общий ПК не переключился на выбранного сотрудника"
@@ -261,6 +283,7 @@ Assert-True ($excelStatus -eq 403) "VIEWER не должен скачивать 
     WrongAgentLoginStatus = $wrongAgentLoginStatus
     RemovedEnrollmentStatus = $removedEnrollmentStatus
     LegacyOperatorContract = "accepted"
+    LoginOperatorContract = "accepted"
     HeartbeatRows = [int]$heartbeatCount.Trim()
     ForeignDuplicateStatus = $foreignDuplicateStatus
     MissingOperatorStatus = $missingOperatorStatus

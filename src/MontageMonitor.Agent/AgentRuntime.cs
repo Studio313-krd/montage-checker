@@ -35,18 +35,21 @@ internal sealed class AgentRuntime(
     {
         if (_worker is null)
         {
-            _worker = RunAndReportFailureAsync(_cancellation.Token);
+            // The runtime must never inherit the WinForms synchronization context. Otherwise
+            // synchronously tearing down the application can wait for a continuation that is
+            // itself waiting for the UI thread, leaving the tray process frozen.
+            _worker = Task.Run(() => RunAndReportFailureAsync(_cancellation.Token));
         }
     }
 
     public async ValueTask DisposeAsync()
     {
-        await _cancellation.CancelAsync();
+        await _cancellation.CancelAsync().ConfigureAwait(false);
         if (_worker is not null)
         {
             try
             {
-                await _worker;
+                await _worker.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {

@@ -169,6 +169,16 @@ public static class SecurityExtensions
                         QueueLimit = 0,
                         Window = TimeSpan.FromMinutes(1),
                     }));
+            options.AddPolicy(SecurityPolicies.AgentLoginOptionsRateLimit, httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        AutoReplenishment = true,
+                        PermitLimit = 60,
+                        QueueLimit = 0,
+                        Window = TimeSpan.FromMinutes(1),
+                    }));
             options.AddPolicy(SecurityPolicies.OperatorPasswordRateLimit, httpContext =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",

@@ -14,7 +14,8 @@ internal sealed class AgentSetupDialog : Form
     private static readonly Color Success = Color.FromArgb(47, 125, 97);
     private static readonly Color Error = Color.FromArgb(185, 68, 68);
 
-    private readonly TextBox _loginTextBox;
+    private readonly ComboBox _employeeComboBox;
+    private readonly Button _refreshEmployeesButton;
     private readonly TextBox _passwordTextBox;
     private readonly Button _loginButton;
     private readonly Button _closeButton;
@@ -77,11 +78,40 @@ internal sealed class AgentSetupDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         content.Controls.Add(layout);
 
-        layout.Controls.Add(CreateFieldLabel("Логин сотрудника"), 0, 0);
-        _loginTextBox = CreateTextBox();
-        _loginTextBox.MaxLength = 100;
-        _loginTextBox.TextChanged += (_, _) => UpdateLoginButton();
-        layout.Controls.Add(_loginTextBox, 0, 1);
+        layout.Controls.Add(CreateFieldLabel("Сотрудник"), 0, 0);
+        var employeeRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0),
+        };
+        employeeRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        employeeRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        _employeeComboBox = new ComboBox
+        {
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            DisplayMember = nameof(AgentOperatorOption.Name),
+            Font = new Font("Segoe UI", 11f),
+            Enabled = false,
+            Margin = new Padding(0),
+        };
+        _employeeComboBox.SelectedIndexChanged += (_, _) => UpdateLoginButton();
+        _refreshEmployeesButton = new Button
+        {
+            Text = "Обновить",
+            Dock = DockStyle.Fill,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Graphite,
+            Cursor = Cursors.Hand,
+            Margin = new Padding(10, 0, 0, 0),
+        };
+        _refreshEmployeesButton.FlatAppearance.BorderColor = Color.FromArgb(195, 199, 205);
+        _refreshEmployeesButton.Click += async (_, _) => await LoadEmployeesAsync();
+        employeeRow.Controls.Add(_employeeComboBox, 0, 0);
+        employeeRow.Controls.Add(_refreshEmployeesButton, 1, 0);
+        layout.Controls.Add(employeeRow, 0, 1);
 
         layout.Controls.Add(CreateFieldLabel("Пароль из 4 цифр"), 0, 3);
         _passwordTextBox = CreateTextBox();
@@ -94,7 +124,7 @@ internal sealed class AgentSetupDialog : Form
 
         _statusLabel = new Label
         {
-            Text = "Адрес сервера настроен автоматически. Логин и пароль выдаёт администратор.",
+            Text = "Загружаем список сотрудников…",
             Dock = DockStyle.Fill,
             ForeColor = Slate,
             TextAlign = ContentAlignment.MiddleLeft,
@@ -139,7 +169,7 @@ internal sealed class AgentSetupDialog : Form
         buttons.Controls.Add(_closeButton);
         layout.Controls.Add(buttons, 0, 7);
 
-        Shown += (_, _) => _loginTextBox.Focus();
+        Shown += async (_, _) => await LoadEmployeesAsync();
         AcceptButton = _loginButton;
         CancelButton = _closeButton;
     }
@@ -155,9 +185,9 @@ internal sealed class AgentSetupDialog : Form
 
     private async void LoginAsync(object? sender, EventArgs eventArgs)
     {
-        if (!AgentLoginInput.IsValid(_loginTextBox.Text, _passwordTextBox.Text))
+        if (!AgentLoginInput.IsValid(SelectedEmployeeId, _passwordTextBox.Text))
         {
-            SetStatus("Введите логин и пароль из четырёх цифр.", Error);
+            SetStatus("Выберите сотрудника и введите пароль из четырёх цифр.", Error);
             return;
         }
 
@@ -166,7 +196,7 @@ internal sealed class AgentSetupDialog : Form
         try
         {
             LoginResult = await AgentApiClient.LoginAsync(
-                _loginTextBox.Text,
+                SelectedEmployeeId!.Value,
                 _passwordTextBox.Text,
                 _cancellation.Token);
             SetStatus("Компьютер подключён. Мониторинг запущен.", Success);
@@ -187,6 +217,9 @@ internal sealed class AgentSetupDialog : Form
         {
             SetStatus("Сервер не ответил за 20 секунд. Повторите попытку.", Error);
         }
+        catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
+        {
+        }
         finally
         {
             if (!IsDisposed)
@@ -200,7 +233,8 @@ internal sealed class AgentSetupDialog : Form
     {
         _busy = busy;
         _closeButton.Enabled = !busy;
-        _loginTextBox.Enabled = !busy;
+        _employeeComboBox.Enabled = !busy && _employeeComboBox.Items.Count > 0;
+        _refreshEmployeesButton.Enabled = !busy;
         _passwordTextBox.Enabled = !busy;
         UseWaitCursor = busy;
         UpdateLoginButton();
@@ -208,7 +242,7 @@ internal sealed class AgentSetupDialog : Form
 
     private void UpdateLoginButton()
     {
-        var enabled = !_busy && AgentLoginInput.IsValid(_loginTextBox.Text, _passwordTextBox.Text);
+        var enabled = !_busy && AgentLoginInput.IsValid(SelectedEmployeeId, _passwordTextBox.Text);
         _loginButton.Enabled = enabled;
         _loginButton.BackColor = enabled ? Amber : DisabledButton;
         _loginButton.ForeColor = enabled ? Graphite : Slate;
@@ -219,6 +253,72 @@ internal sealed class AgentSetupDialog : Form
     {
         _statusLabel.Text = message;
         _statusLabel.ForeColor = color;
+    }
+
+    private Guid? SelectedEmployeeId =>
+        (_employeeComboBox.SelectedItem as AgentOperatorOption)?.EmployeeId;
+
+    private async Task LoadEmployeesAsync()
+    {
+        var previouslySelectedId = SelectedEmployeeId;
+        SetBusy(true);
+        SetStatus("Загружаем список сотрудников…", Slate);
+        try
+        {
+            var response = await AgentApiClient.GetLoginOptionsAsync(_cancellation.Token);
+            _employeeComboBox.BeginUpdate();
+            try
+            {
+                _employeeComboBox.Items.Clear();
+                foreach (var employee in response.Employees)
+                {
+                    _employeeComboBox.Items.Add(employee);
+                }
+
+                var selectedIndex = response.Employees
+                    .Select((employee, index) => new { employee.EmployeeId, Index = index })
+                    .FirstOrDefault(item => item.EmployeeId == previouslySelectedId)?.Index ?? -1;
+                _employeeComboBox.SelectedIndex = selectedIndex >= 0
+                    ? selectedIndex
+                    : (_employeeComboBox.Items.Count > 0 ? 0 : -1);
+            }
+            finally
+            {
+                _employeeComboBox.EndUpdate();
+            }
+
+            SetStatus(
+                _employeeComboBox.Items.Count > 0
+                    ? "Выберите своё имя и введите выданный администратором пароль."
+                    : "Активных сотрудников нет. Обратитесь к администратору.",
+                _employeeComboBox.Items.Count > 0 ? Slate : Error);
+            _passwordTextBox.Focus();
+        }
+        catch (AgentLoginException exception)
+        {
+            _employeeComboBox.Items.Clear();
+            SetStatus(exception.Message + " Нажмите «Обновить».", Error);
+        }
+        catch (HttpRequestException)
+        {
+            _employeeComboBox.Items.Clear();
+            SetStatus("Сервер недоступен. Проверьте интернет и нажмите «Обновить».", Error);
+        }
+        catch (TaskCanceledException) when (!_cancellation.IsCancellationRequested)
+        {
+            _employeeComboBox.Items.Clear();
+            SetStatus("Сервер не ответил. Нажмите «Обновить».", Error);
+        }
+        catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (!IsDisposed)
+            {
+                SetBusy(false);
+            }
+        }
     }
 
     private static void AllowDigitsOnly(object? sender, KeyPressEventArgs eventArgs)
@@ -254,7 +354,7 @@ internal sealed class AgentSetupDialog : Form
             Location = new Point(33, 52),
         });
 
-        var labels = new[] { "ЛОГИН", "ПАРОЛЬ", "ГОТОВО" };
+        var labels = new[] { "СОТРУДНИК", "ПАРОЛЬ", "ГОТОВО" };
         for (var index = 0; index < labels.Length; index++)
         {
             var x = 34 + index * 118;
@@ -306,9 +406,9 @@ internal sealed class AgentSetupDialog : Form
 
 internal static class AgentLoginInput
 {
-    public static bool IsValid(string? login, string? password) =>
-        !string.IsNullOrWhiteSpace(login) &&
-        login.Trim().Length <= 100 &&
+    public static bool IsValid(Guid? employeeId, string? password) =>
+        employeeId.HasValue &&
+        employeeId != Guid.Empty &&
         password is { Length: 4 } &&
         password.All(char.IsAsciiDigit);
 }

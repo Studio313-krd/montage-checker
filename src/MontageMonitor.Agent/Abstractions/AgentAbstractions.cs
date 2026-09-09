@@ -94,8 +94,11 @@ internal interface IAgentApiClient : IDisposable
         Guid? operatorSessionId,
         CancellationToken cancellationToken);
 
+    Task<AgentOperatorOptionsResponse> GetOperatorOptionsAsync(
+        CancellationToken cancellationToken);
+
     Task<AgentOperatorSessionResponse> StartOperatorSessionAsync(
-        string login,
+        Guid employeeId,
         string password,
         CancellationToken cancellationToken);
 

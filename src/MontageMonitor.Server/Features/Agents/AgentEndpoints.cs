@@ -16,11 +16,16 @@ public static class AgentEndpoints
         var group = endpoints.MapGroup("/api/agent")
             .WithTags("Windows Agent");
 
+        group.MapGet("/login-options", GetLoginOptionsAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting(SecurityPolicies.AgentLoginOptionsRateLimit)
+            .WithName("GetAgentLoginOptions")
+            .WithSummary("Получить список активных сотрудников для входа в Windows Agent");
         group.MapPost("/login", LoginAsync)
             .AllowAnonymous()
             .RequireRateLimiting(SecurityPolicies.AgentLoginRateLimit)
             .WithName("LoginAgent")
-            .WithSummary("Подключить Windows Agent по логину и паролю сотрудника");
+            .WithSummary("Подключить Windows Agent по выбранному сотруднику и паролю");
         group.MapPost("/heartbeat", HeartbeatAsync)
             .RequireAuthorization(AgentAuthenticationDefaults.Policy)
             .WithName("AgentHeartbeat")
@@ -33,13 +38,25 @@ public static class AgentEndpoints
             .RequireAuthorization(AgentAuthenticationDefaults.Policy)
             .RequireRateLimiting(SecurityPolicies.OperatorPasswordRateLimit)
             .WithName("StartAgentOperatorSession")
-            .WithSummary("Подтвердить монтажёра логином и паролем до следующего 06:00");
+            .WithSummary("Подтвердить выбранного монтажёра и пароль до следующего 06:00");
         group.MapGet("/config", GetConfigurationAsync)
             .RequireAuthorization(AgentAuthenticationDefaults.Policy)
             .WithName("GetAgentConfiguration")
             .WithSummary("Получить конфигурацию Agent");
 
         return endpoints;
+    }
+
+    private static async Task<IResult> GetLoginOptionsAsync(
+        MonitoringDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var employees = await dbContext.Employees.AsNoTracking()
+            .Where(item => item.IsActive)
+            .OrderBy(item => item.Name)
+            .Select(item => new AgentOperatorOption(item.Id, item.Name))
+            .ToListAsync(cancellationToken);
+        return Results.Ok(new AgentLoginOptionsResponse(employees));
     }
 
     private static async Task<IResult> LoginAsync(
@@ -60,7 +77,12 @@ public static class AgentEndpoints
             return Results.ValidationProblem(validation);
         }
 
-        var normalizedLogin = request.Login.Trim().ToUpperInvariant();
+        var selectedEmployeeId = request.EmployeeId is { } employeeId && employeeId != Guid.Empty
+            ? employeeId
+            : (Guid?)null;
+        var normalizedLogin = selectedEmployeeId.HasValue
+            ? null
+            : request.Login!.Trim().ToUpperInvariant();
         var normalizedMachineName = request.MachineName.Trim().ToUpperInvariant();
         var strategy = dbContext.Database.CreateExecutionStrategy();
         var response = await strategy.ExecuteAsync(async () =>
@@ -71,9 +93,13 @@ public static class AgentEndpoints
                 $"SELECT pg_advisory_xact_lock(hashtext({normalizedMachineName}))",
                 cancellationToken);
 
-            var employee = await dbContext.Employees.SingleOrDefaultAsync(
-                item => item.NormalizedLogin == normalizedLogin && item.IsActive,
-                cancellationToken);
+            var employee = selectedEmployeeId.HasValue
+                ? await dbContext.Employees.SingleOrDefaultAsync(
+                    item => item.Id == selectedEmployeeId.Value && item.IsActive,
+                    cancellationToken)
+                : await dbContext.Employees.SingleOrDefaultAsync(
+                    item => item.NormalizedLogin == normalizedLogin && item.IsActive,
+                    cancellationToken);
             if (employee is null ||
                 !passwordService.Verify(employee.OperatorPinProtected, request.Password))
             {
@@ -260,14 +286,14 @@ public static class AgentEndpoints
         CancellationToken cancellationToken)
     {
         var usesLogin = !string.IsNullOrWhiteSpace(request.Login);
-        var password = usesLogin ? request.Password : request.Pin;
+        var password = request.Password ?? request.Pin;
         if ((usesLogin && request.Login!.Trim().Length > 100) ||
             (!usesLogin && (!request.EmployeeId.HasValue || request.EmployeeId == Guid.Empty)) ||
             !IsFourDigitPassword(password))
         {
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
-                [nameof(request.Password)] = ["Введите логин и пароль из четырёх цифр."],
+                [nameof(request.Password)] = ["Выберите сотрудника и введите пароль из четырёх цифр."],
             });
         }
 
@@ -282,7 +308,7 @@ public static class AgentEndpoints
         if (employee is null || !passwordService.Verify(employee.OperatorPinProtected, password!))
         {
             return Results.Json(
-                new { message = "Неверный логин или пароль." },
+                new { message = "Неверный сотрудник или пароль." },
                 statusCode: StatusCodes.Status401Unauthorized);
         }
 
@@ -708,7 +734,12 @@ public static class AgentEndpoints
     private static Dictionary<string, string[]>? ValidateLogin(AgentLoginRequest request)
     {
         var errors = new Dictionary<string, string[]>();
-        ValidateRequired(request.Login, 100, nameof(request.Login), "Логин", errors);
+        var hasEmployeeId = request.EmployeeId.HasValue && request.EmployeeId != Guid.Empty;
+        if (!hasEmployeeId)
+        {
+            ValidateRequired(request.Login, 100, nameof(request.Login), "Сотрудник", errors);
+        }
+
         if (!IsFourDigitPassword(request.Password))
         {
             errors[nameof(request.Password)] = ["Пароль должен состоять из четырёх цифр."];

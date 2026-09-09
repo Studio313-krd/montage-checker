@@ -33,6 +33,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private AgentSettings? _settings;
     private bool _configurationDialogOpen;
     private bool _operatorSelectionOpen;
+    private bool _exitInProgress;
 
     public TrayApplicationContext()
     {
@@ -48,7 +49,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _switchOperatorItem.Click += async (_, _) => await EnsureOperatorSelectionAsync(force: true);
 
         var exitItem = new ToolStripMenuItem("Выход");
-        exitItem.Click += (_, _) => RequestExit();
+        exitItem.Click += async (_, _) => await RequestExitAsync();
 
         _menu = new ContextMenuStrip();
         _menu.Items.AddRange([
@@ -421,14 +422,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _runtime = null;
     }
 
-    private void RequestExit()
+    private async Task RequestExitAsync()
     {
-        using var dialog = new ShutdownDialog();
-        if (dialog.ShowDialog() == DialogResult.OK)
+        if (_exitInProgress)
         {
-            Environment.ExitCode = 0;
-            ExitThread();
+            return;
         }
+
+        using var dialog = new ShutdownDialog();
+        if (dialog.ShowDialog() != DialogResult.OK)
+        {
+            return;
+        }
+
+        _exitInProgress = true;
+        _startupTimer.Stop();
+        _operatorTimer.Stop();
+        _menu.Enabled = false;
+        _notifyIcon.Text = "MontageMonitor — завершение работы";
+        await StopRuntimeAsync();
+        Environment.ExitCode = 0;
+        ExitThread();
     }
 
     protected override void ExitThreadCore()

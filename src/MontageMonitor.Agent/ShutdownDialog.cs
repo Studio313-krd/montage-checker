@@ -99,7 +99,7 @@ internal sealed class ShutdownDialog : Form
         _password.Focus();
     }
 
-    private static bool PasswordMatches(string password)
+    internal static bool PasswordMatches(string password)
     {
         var input = Encoding.UTF8.GetBytes($"MontageMonitor:shutdown:v1:{password}");
         var actualHash = SHA256.HashData(input);

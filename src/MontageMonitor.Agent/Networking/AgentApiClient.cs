@@ -87,14 +87,36 @@ internal sealed class AgentApiClient : IAgentApiClient
         }
     }
 
+    public async Task<AgentOperatorOptionsResponse> GetOperatorOptionsAsync(
+        CancellationToken cancellationToken)
+    {
+        using var response = await _httpClient.GetAsync("api/agent/operators", cancellationToken);
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            throw new AgentAuthenticationRequiredException(
+                "Подключение компьютера отозвано или истекло. Войдите заново.");
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new OperatorSelectionException(
+                $"Не удалось получить список сотрудников: HTTP {(int)response.StatusCode}.");
+        }
+
+        return await response.Content.ReadFromJsonAsync<AgentOperatorOptionsResponse>(
+                   JsonOptions,
+                   cancellationToken)
+               ?? throw new OperatorSelectionException("Сервер вернул пустой список сотрудников.");
+    }
+
     public async Task<AgentOperatorSessionResponse> StartOperatorSessionAsync(
-        string login,
+        Guid employeeId,
         string password,
         CancellationToken cancellationToken)
     {
         using var response = await _httpClient.PostAsJsonAsync(
             "api/agent/operator-session",
-            new StartAgentOperatorSessionRequest(login.Trim(), password),
+            new StartAgentOperatorSessionRequest(null, password, employeeId),
             JsonOptions,
             cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -111,7 +133,7 @@ internal sealed class AgentApiClient : IAgentApiClient
 
             var message = response.StatusCode switch
             {
-                HttpStatusCode.Unauthorized => "Неверный логин или пароль.",
+                HttpStatusCode.Unauthorized => "Неверный сотрудник или пароль.",
                 HttpStatusCode.TooManyRequests => "Слишком много попыток. Подождите одну минуту.",
                 _ => $"Сервер отклонил выбор монтажёра: HTTP {(int)response.StatusCode}.",
             };
@@ -174,28 +196,42 @@ internal sealed class AgentApiClient : IAgentApiClient
 
     public void Dispose() => _httpClient.Dispose();
 
+    public static async Task<AgentLoginOptionsResponse> GetLoginOptionsAsync(
+        CancellationToken cancellationToken)
+    {
+        using var client = CreateAnonymousClient();
+        using var response = await client.GetAsync("api/agent/login-options", cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var message = response.StatusCode switch
+            {
+                HttpStatusCode.TooManyRequests =>
+                    "Слишком много запросов. Подождите одну минуту и обновите список.",
+                _ => $"Не удалось получить список сотрудников: HTTP {(int)response.StatusCode}.",
+            };
+            throw new AgentLoginException(message);
+        }
+
+        return await response.Content.ReadFromJsonAsync<AgentLoginOptionsResponse>(
+                   JsonOptions,
+                   cancellationToken)
+               ?? throw new AgentLoginException("Сервер вернул пустой список сотрудников.");
+    }
+
     public static async Task<AgentLoginResponse> LoginAsync(
-        string login,
+        Guid employeeId,
         string password,
         CancellationToken cancellationToken)
     {
-        using var handler = new HttpClientHandler
-        {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Brotli,
-        };
-        using var client = new HttpClient(handler)
-        {
-            BaseAddress = new Uri(AgentEnvironment.ServerBaseUrl + "/", UriKind.Absolute),
-            Timeout = TimeSpan.FromSeconds(20),
-        };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd($"MontageMonitor.Agent/{AgentEnvironment.Version}");
+        using var client = CreateAnonymousClient();
         var request = new AgentLoginRequest(
-            login.Trim(),
+            null,
             password,
             Environment.MachineName,
             AgentEnvironment.WindowsUser,
             System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-            AgentEnvironment.Version);
+            AgentEnvironment.Version,
+            employeeId);
         using var response = await client.PostAsJsonAsync(
             "api/agent/login",
             request,
@@ -205,7 +241,7 @@ internal sealed class AgentApiClient : IAgentApiClient
         {
             var message = response.StatusCode switch
             {
-                HttpStatusCode.Unauthorized => "Неверный логин или пароль.",
+                HttpStatusCode.Unauthorized => "Неверный сотрудник или пароль.",
                 HttpStatusCode.TooManyRequests => "Слишком много попыток. Подождите одну минуту.",
                 _ => $"Сервер отклонил вход: HTTP {(int)response.StatusCode}.",
             };
@@ -214,6 +250,21 @@ internal sealed class AgentApiClient : IAgentApiClient
 
         return await response.Content.ReadFromJsonAsync<AgentLoginResponse>(JsonOptions, cancellationToken)
             ?? throw new AgentLoginException("Сервер вернул пустой ответ входа.");
+    }
+
+    private static HttpClient CreateAnonymousClient()
+    {
+        var handler = new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Brotli,
+        };
+        var client = new HttpClient(handler)
+        {
+            BaseAddress = new Uri(AgentEnvironment.ServerBaseUrl + "/", UriKind.Absolute),
+            Timeout = TimeSpan.FromSeconds(20),
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd($"MontageMonitor.Agent/{AgentEnvironment.Version}");
+        return client;
     }
 }
 
