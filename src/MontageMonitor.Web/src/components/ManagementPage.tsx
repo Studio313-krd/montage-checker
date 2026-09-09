@@ -5,12 +5,14 @@ import {
   createEmployee,
   createEnrollmentToken,
   createUser,
+  getEmployeeOperatorPins,
   getManagedComputers,
   getManagedEmployees,
   getScreenshotPrivacyProcesses,
   getScreenshotSettings,
   getUsers,
   revokeAgent,
+  regenerateEmployeeOperatorPin,
   updateEmployee,
   updateUser,
 } from '../api'
@@ -303,6 +305,7 @@ function EnrollmentDialog({ employee, onClose }: { employee: Employee; onClose: 
 export function ManagementPage({ currentUser }: { currentUser: AuthUser }) {
   const [tab, setTab] = useState<ManagementTab>('employees')
   const [employees, setEmployees] = useState<Employee[]>([])
+  const [operatorPins, setOperatorPins] = useState<Record<string, string>>({})
   const [computers, setComputers] = useState<ManagedComputer[]>([])
   const [users, setUsers] = useState<AdminUser[]>([])
   const [screenshotSettings, setScreenshotSettings] = useState<ScreenshotSettings | null>(null)
@@ -315,18 +318,21 @@ export function ManagementPage({ currentUser }: { currentUser: AuthUser }) {
   const [passwordUser, setPasswordUser] = useState<AdminUser | null>(null)
   const [enrollmentEmployee, setEnrollmentEmployee] = useState<Employee | null>(null)
   const [revoking, setRevoking] = useState<string | null>(null)
+  const [regeneratingPin, setRegeneratingPin] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [nextEmployees, nextComputers, nextUsers, nextScreenshotSettings, nextPrivacyProcesses] = await Promise.all([
+      const [nextEmployees, nextPins, nextComputers, nextUsers, nextScreenshotSettings, nextPrivacyProcesses] = await Promise.all([
         getManagedEmployees(),
+        getEmployeeOperatorPins(),
         getManagedComputers(),
         getUsers(),
         getScreenshotSettings(),
         getScreenshotPrivacyProcesses(),
       ])
       setEmployees(nextEmployees)
+      setOperatorPins(Object.fromEntries(nextPins.map((item) => [item.employeeId, item.operatorPin])))
       setComputers(nextComputers)
       setUsers(nextUsers)
       setScreenshotSettings(nextScreenshotSettings)
@@ -365,6 +371,21 @@ export function ManagementPage({ currentUser }: { currentUser: AuthUser }) {
     }
   }
 
+  async function handleRegeneratePin(employee: Employee) {
+    if (!window.confirm(`Создать новый PIN для сотрудника «${employee.name}»? Старый PIN сразу перестанет работать для новых смен.`)) return
+    setRegeneratingPin(employee.id)
+    setNotice(null)
+    try {
+      const result = await regenerateEmployeeOperatorPin(employee.id)
+      setOperatorPins((current) => ({ ...current, [result.employeeId]: result.operatorPin }))
+      setNotice(`Для сотрудника «${employee.name}» создан новый PIN: ${result.operatorPin}`)
+    } catch (caught) {
+      setError(messageFrom(caught))
+    } finally {
+      setRegeneratingPin(null)
+    }
+  }
+
   return (
     <>
       <header className="dashboard-header management-header">
@@ -389,10 +410,10 @@ export function ManagementPage({ currentUser }: { currentUser: AuthUser }) {
       </div>
 
       {tab === 'employees' && <section className="management-surface" role="tabpanel">
-        <header><div><p className="eyebrow">Команда</p><h2>Сотрудники</h2><p>Настройте учёт рабочего времени и выдайте код для установки Agent.</p></div><button className="primary-button management-create" onClick={() => setEmployeeEditor(null)} type="button"><Icon name="userPlus" /> Добавить сотрудника</button></header>
-        {loading && !employees.length ? <div className="management-loading">Загружаем сотрудников…</div> : employees.length ? <div className="responsive-table management-table"><table><thead><tr><th>Сотрудник</th><th>Логин</th><th>Мониторинг</th><th>Компьютеры</th><th><span className="visually-hidden">Действия</span></th></tr></thead><tbody>{employees.map((employee) => {
+        <header><div><p className="eyebrow">Команда</p><h2>Сотрудники</h2><p>PIN подтверждает монтажёра на каждом компьютере до следующего 06:00.</p></div><button className="primary-button management-create" onClick={() => setEmployeeEditor(null)} type="button"><Icon name="userPlus" /> Добавить сотрудника</button></header>
+        {loading && !employees.length ? <div className="management-loading">Загружаем сотрудников…</div> : employees.length ? <div className="responsive-table management-table"><table><thead><tr><th>Сотрудник</th><th>Логин</th><th>PIN монтажёра</th><th>Мониторинг</th><th>Компьютеры</th><th><span className="visually-hidden">Действия</span></th></tr></thead><tbody>{employees.map((employee) => {
           const employeeComputers = computers.filter((computer) => computer.employeeId === employee.id)
-          return <tr key={employee.id}><td><strong>{employee.name}</strong><small>{employee.department ?? 'Отдел не указан'}</small>{!employee.isActive && <span className="management-status is-inactive">Неактивен</span>}</td><td><code>{employee.login}</code></td><td><strong>{employee.screenshotEnabled ? `Снимки · ${employee.screenshotIntervalMinutes} мин` : 'Без снимков'}</strong><small>Простой после {employee.idleThresholdSeconds} сек.</small></td><td><strong>{employeeComputers.length || '—'}</strong><small>{employeeComputers.some((item) => item.agentStatus === 'Online') ? 'Есть Agent в сети' : 'Нет Agent в сети'}</small></td><td><div className="management-row-actions"><button disabled={!employee.isActive} onClick={() => setEnrollmentEmployee(employee)} type="button"><Icon name="key" size={17} /> Код Agent</button><button onClick={() => setEmployeeEditor(employee)} type="button">Изменить</button></div></td></tr>
+          return <tr key={employee.id}><td><strong>{employee.name}</strong><small>{employee.department ?? 'Отдел не указан'}</small>{!employee.isActive && <span className="management-status is-inactive">Неактивен</span>}</td><td><code>{employee.login}</code></td><td><strong className="operator-pin">{operatorPins[employee.id] ?? '••••'}</strong><small>Выдайте сотруднику лично</small></td><td><strong>{employee.screenshotEnabled ? `Снимки · ${employee.screenshotIntervalMinutes} мин` : 'Без снимков'}</strong><small>Простой после {employee.idleThresholdSeconds} сек.</small></td><td><strong>{employeeComputers.length || '—'}</strong><small>{employeeComputers.some((item) => item.agentStatus === 'Online') ? 'Есть Agent в сети' : 'Нет Agent в сети'}</small></td><td><div className="management-row-actions"><button disabled={!employee.isActive || regeneratingPin === employee.id} onClick={() => void handleRegeneratePin(employee)} type="button"><Icon name="refresh" size={17} /> {regeneratingPin === employee.id ? 'Создаём…' : 'Новый PIN'}</button><button disabled={!employee.isActive} onClick={() => setEnrollmentEmployee(employee)} type="button"><Icon name="key" size={17} /> Код Agent</button><button onClick={() => setEmployeeEditor(employee)} type="button">Изменить</button></div></td></tr>
         })}</tbody></table></div> : <div className="empty-state management-empty"><Icon name="users" size={30} /><h3>Сотрудников пока нет</h3><p>Добавьте первого сотрудника, затем выдайте ему одноразовый код Agent.</p></div>}
       </section>}
 

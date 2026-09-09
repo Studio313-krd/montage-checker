@@ -25,6 +25,16 @@ public static class EmployeeEndpoints
             .RequireAuthorization(SecurityPolicies.ManageEmployees)
             .WithName("DeactivateEmployee").WithSummary("Деактивировать сотрудника");
 
+        var operatorPins = endpoints.MapGroup("/api/admin/employees")
+            .RequireAuthorization(SecurityPolicies.ManageEmployees)
+            .WithTags("PIN монтажёров");
+        operatorPins.MapGet("/operator-pins", GetOperatorPinsAsync)
+            .WithName("GetEmployeeOperatorPins")
+            .WithSummary("Получить PIN монтажёров");
+        operatorPins.MapPost("/{id:guid}/operator-pin/regenerate", RegenerateOperatorPinAsync)
+            .WithName("RegenerateEmployeeOperatorPin")
+            .WithSummary("Создать новый PIN монтажёра");
+
         return endpoints;
     }
 
@@ -72,6 +82,7 @@ public static class EmployeeEndpoints
     private static async Task<IResult> CreateAsync(
         CreateEmployeeRequest request,
         MonitoringDbContext dbContext,
+        EmployeeOperatorPinService pinService,
         CancellationToken cancellationToken)
     {
         var validation = Validate(request.Name, request.Login, request.ScreenshotIntervalMinutes, request.IdleThresholdSeconds);
@@ -95,6 +106,7 @@ public static class EmployeeEndpoints
             ScreenshotEnabled = request.ScreenshotEnabled,
             ScreenshotIntervalMinutes = request.ScreenshotIntervalMinutes,
             IdleThresholdSeconds = request.IdleThresholdSeconds,
+            OperatorPinProtected = pinService.Protect(pinService.Generate()),
         };
 
         dbContext.Employees.Add(employee);
@@ -157,6 +169,71 @@ public static class EmployeeEndpoints
         employee.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
         return Results.NoContent();
+    }
+
+    private static async Task<IResult> GetOperatorPinsAsync(
+        HttpContext httpContext,
+        MonitoringDbContext dbContext,
+        EmployeeOperatorPinService pinService,
+        CancellationToken cancellationToken)
+    {
+        httpContext.Response.Headers.CacheControl = "no-store";
+        var employees = await dbContext.Employees
+            .OrderBy(item => item.Name)
+            .ToListAsync(cancellationToken);
+        var changed = false;
+        var result = new List<EmployeeOperatorPinResponse>(employees.Count);
+        foreach (var employee in employees)
+        {
+            var pin = pinService.Reveal(employee.OperatorPinProtected);
+            if (pin is null)
+            {
+                pin = pinService.Generate();
+                employee.OperatorPinProtected = pinService.Protect(pin);
+                employee.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                changed = true;
+            }
+
+            result.Add(new EmployeeOperatorPinResponse(employee.Id, pin));
+        }
+
+        if (changed)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return Results.Ok(result);
+    }
+
+    private static async Task<IResult> RegenerateOperatorPinAsync(
+        Guid id,
+        HttpContext httpContext,
+        MonitoringDbContext dbContext,
+        EmployeeOperatorPinService pinService,
+        AuditWriter auditWriter,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        httpContext.Response.Headers.CacheControl = "no-store";
+        var employee = await dbContext.Employees.SingleOrDefaultAsync(
+            item => item.Id == id,
+            cancellationToken);
+        if (employee is null)
+        {
+            return Results.NotFound();
+        }
+
+        var pin = pinService.Generate();
+        employee.OperatorPinProtected = pinService.Protect(pin);
+        employee.UpdatedAtUtc = timeProvider.GetUtcNow();
+        auditWriter.Add(
+            httpContext,
+            "employee.operator-pin.regenerated",
+            "Employee",
+            employee.Id.ToString(),
+            httpContext.User.GetRequiredUserId());
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new EmployeeOperatorPinResponse(employee.Id, pin));
     }
 
     private static Dictionary<string, string[]>? Validate(

@@ -96,35 +96,54 @@ public static class AgentAdminEndpoints
             ? Math.Clamp(configuredInterval, 15, 300)
             : 30;
         var offlineAfterSeconds = Math.Max(90, heartbeatInterval * 3);
-        var offlineBefore = timeProvider.GetUtcNow().AddSeconds(-offlineAfterSeconds);
-        var computers = await (
-            from computer in dbContext.Computers.AsNoTracking()
-            join employee in dbContext.Employees.AsNoTracking() on computer.EmployeeId equals employee.Id
-            join agentItem in dbContext.Agents.AsNoTracking() on computer.Id equals agentItem.ComputerId into agents
-            from agent in agents.DefaultIfEmpty()
-            orderby employee.Name, computer.Name
-            select new ComputerResponse(
-                computer.Id,
-                employee.Id,
-                employee.Name,
-                computer.Name,
-                computer.OperatingSystem,
-                computer.AgentVersion,
-                computer.LastHeartbeatAtUtc,
-                computer.LastOnlineAtUtc,
-                computer.IsRevoked,
-                agent == null ? null : agent.Id,
-                agent == null
-                    ? null
-                    : agent.Status == AgentStatus.Revoked
-                        ? nameof(AgentStatus.Revoked)
-                        : agent.LastSeenAtUtc < offlineBefore
-                            ? nameof(AgentStatus.Offline)
-                            : nameof(AgentStatus.Online),
-                agent == null ? null : agent.LastSeenAtUtc))
+        var now = timeProvider.GetUtcNow();
+        var offlineBefore = now.AddSeconds(-offlineAfterSeconds);
+        var computers = await dbContext.Computers.AsNoTracking().ToListAsync(cancellationToken);
+        var agents = await dbContext.Agents.AsNoTracking().ToListAsync(cancellationToken);
+        var agentIds = agents.Select(item => item.Id).ToArray();
+        var sessions = await dbContext.AgentOperatorSessions.AsNoTracking()
+            .Where(item => agentIds.Contains(item.AgentId) && item.StartedAtUtc <= now &&
+                           item.ExpiresAtUtc > now && item.EndedAtUtc == null)
             .ToListAsync(cancellationToken);
+        var employeeIds = computers.Select(item => item.EmployeeId)
+            .Concat(sessions.Select(item => item.EmployeeId))
+            .Distinct()
+            .ToArray();
+        var employeeNames = await dbContext.Employees.AsNoTracking()
+            .Where(item => employeeIds.Contains(item.Id))
+            .ToDictionaryAsync(item => item.Id, item => item.Name, cancellationToken);
+        var agentByComputer = agents.ToDictionary(item => item.ComputerId);
+        var sessionByAgent = sessions.ToDictionary(item => item.AgentId);
+        var response = computers.Select(computer =>
+            {
+                var agent = agentByComputer.GetValueOrDefault(computer.Id);
+                var operatorSession = agent is null ? null : sessionByAgent.GetValueOrDefault(agent.Id);
+                var employeeId = operatorSession?.EmployeeId ?? computer.EmployeeId;
+                return new ComputerResponse(
+                    computer.Id,
+                    employeeId,
+                    employeeNames.GetValueOrDefault(employeeId) ?? "Неизвестный сотрудник",
+                    computer.Name,
+                    computer.OperatingSystem,
+                    computer.AgentVersion,
+                    computer.LastHeartbeatAtUtc,
+                    computer.LastOnlineAtUtc,
+                    computer.IsRevoked,
+                    agent?.Id,
+                    agent is null
+                        ? null
+                        : agent.Status == AgentStatus.Revoked
+                            ? nameof(AgentStatus.Revoked)
+                            : agent.LastSeenAtUtc < offlineBefore
+                                ? nameof(AgentStatus.Offline)
+                                : nameof(AgentStatus.Online),
+                    agent?.LastSeenAtUtc);
+            })
+            .OrderBy(item => item.EmployeeName)
+            .ThenBy(item => item.Name)
+            .ToList();
 
-        return Results.Ok(computers);
+        return Results.Ok(response);
     }
 
     private static async Task<IResult> RevokeAgentAsync(

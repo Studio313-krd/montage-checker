@@ -28,3 +28,5 @@ public sealed record UpdateEmployeeRequest(
     bool ScreenshotEnabled,
     int ScreenshotIntervalMinutes,
     int IdleThresholdSeconds);
+
+public sealed record EmployeeOperatorPinResponse(Guid EmployeeId, string OperatorPin);

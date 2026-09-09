@@ -14,6 +14,7 @@ public sealed class MonitoringDbContext(DbContextOptions<MonitoringDbContext> op
     public DbSet<AgentDevice> Agents => Set<AgentDevice>();
     public DbSet<AgentCredential> AgentCredentials => Set<AgentCredential>();
     public DbSet<AgentEnrollmentToken> AgentEnrollmentTokens => Set<AgentEnrollmentToken>();
+    public DbSet<AgentOperatorSession> AgentOperatorSessions => Set<AgentOperatorSession>();
     public DbSet<Heartbeat> Heartbeats => Set<Heartbeat>();
     public DbSet<ActivityEvent> ActivityEvents => Set<ActivityEvent>();
     public DbSet<ApplicationSession> ApplicationSessions => Set<ApplicationSession>();

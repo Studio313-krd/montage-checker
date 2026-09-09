@@ -57,6 +57,9 @@ builder.Services.AddHealthChecks()
 builder.Services.AddPersistence(builder.Configuration);
 builder.Services.AddMontageSecurity(builder.Configuration);
 builder.Services.AddScoped<ActivityAggregationService>();
+builder.Services.AddScoped<OperatorSessionService>();
+builder.Services.Configure<OperatorSelectionOptions>(
+    builder.Configuration.GetSection(OperatorSelectionOptions.SectionName));
 builder.Services.AddScoped<ExcelReportDataBuilder>();
 builder.Services.AddSingleton<ExcelReportWorkbookWriter>();
 builder.Services.AddHostedService<ActivityStaleSessionWorker>();
@@ -135,6 +138,7 @@ if (hasWebClient)
 
 await app.ApplyDatabaseMigrationsAsync();
 await app.BootstrapOwnerAsync();
+await app.ProvisionEmployeeOperatorPinsAsync();
 await app.RunAsync();
 
 public partial class Program;

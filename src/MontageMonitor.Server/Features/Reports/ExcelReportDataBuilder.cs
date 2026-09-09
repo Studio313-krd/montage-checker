@@ -72,9 +72,9 @@ internal sealed class ExcelReportDataBuilder(
             range,
             BuildSummary(employees, applications, human, machine, screenshots, range),
             BuildTimeline(applications, human, machine, employeeNames, computers, range, ApplicationName),
-            BuildApplications(applications, employeeNames, range, ApplicationName),
-            BuildRenders(renders, employeeNames, range),
-            BuildIdle(human, employeeNames, range));
+            BuildApplications(applications, employeeNames, computers, range, ApplicationName),
+            BuildRenders(renders, employeeNames, computers, range),
+            BuildIdle(human, employeeNames, computers, range));
         return new ExcelReportBuildResult(data, false);
     }
 
@@ -126,21 +126,24 @@ internal sealed class ExcelReportDataBuilder(
                     .Concat(employeeMachine.Where(item => item.State != MachineState.Normal)
                         .Select(item => ReportTime.Clip(item.StartedAtUtc, item.EndedAtUtc, start, end)))
                     .Where(item => item.HasValue).Select(item => item!.Value);
+                var humanTime = ReportTime.SummarizeHumanStates(employeeHuman, start, end);
                 result.Add(new ExcelSummaryRow(
                     employee.Id,
                     employee.Name,
                     date,
                     observed.Count == 0 ? null : observed.Min(item => item.StartUtc),
                     observed.Count == 0 ? null : observed.Max(item => item.EndUtc),
-                    ReportTime.UnionSeconds(tracked),
+                    humanTime.TotalSeconds,
                     ReportTime.UnionSeconds(productive),
-                    StateSeconds(employeeHuman, HumanState.Active, start, end),
+                    humanTime.ActiveSeconds,
                     StateSeconds(employeeMachine, MachineState.Render, start, end),
                     StateSeconds(employeeMachine, MachineState.Proxy, start, end),
                     StateSeconds(employeeMachine, MachineState.BackgroundProcessing, start, end),
-                    StateSeconds(employeeHuman, HumanState.Idle, start, end),
-                    StateSeconds(employeeHuman, HumanState.Locked, start, end),
-                    StateSeconds(employeeHuman, HumanState.Offline, start, end),
+                    humanTime.IdleSeconds,
+                    humanTime.LockedSeconds,
+                    humanTime.OfflineSeconds,
+                    humanTime.ComputerCount,
+                    humanTime.ParallelSeconds,
                     employeeScreenshots.Count(item => item.TimestampUtc >= start && item.TimestampUtc < end)));
             }
 
@@ -231,12 +234,16 @@ internal sealed class ExcelReportDataBuilder(
             }
         }
 
-        return result.OrderBy(item => item.EmployeeName).ThenBy(item => item.StartedAtUtc).ToList();
+        return result.OrderBy(item => item.EmployeeName)
+            .ThenBy(item => item.ComputerName)
+            .ThenBy(item => item.StartedAtUtc)
+            .ToList();
     }
 
     private static IReadOnlyList<ExcelApplicationRow> BuildApplications(
         IReadOnlyCollection<ApplicationSession> applications,
         IReadOnlyDictionary<Guid, string> employeeNames,
+        IReadOnlyDictionary<Guid, string> computerNames,
         ReportRange range,
         Func<string, string> applicationName) =>
         applications.SelectMany(session => ReportTime.SplitByLocalDate(
@@ -249,6 +256,8 @@ internal sealed class ExcelReportDataBuilder(
             {
                 session.EmployeeId,
                 EmployeeName = employeeNames[session.EmployeeId],
+                session.ComputerId,
+                ComputerName = computerNames.GetValueOrDefault(session.ComputerId) ?? "Неизвестный компьютер",
                 slice.Date,
                 Application = applicationName(session.ProcessName),
                 session.Classification,
@@ -258,6 +267,8 @@ internal sealed class ExcelReportDataBuilder(
             {
                 item.EmployeeId,
                 item.EmployeeName,
+                item.ComputerId,
+                item.ComputerName,
                 item.Date,
                 item.Application,
                 item.Classification,
@@ -265,11 +276,14 @@ internal sealed class ExcelReportDataBuilder(
             .Select(group => new ExcelApplicationRow(
                 group.Key.EmployeeId,
                 group.Key.EmployeeName,
+                group.Key.ComputerId,
+                group.Key.ComputerName,
                 group.Key.Date,
                 group.Key.Application,
                 group.Key.Classification,
                 group.Sum(item => item.DurationSeconds)))
             .OrderBy(item => item.EmployeeName)
+            .ThenBy(item => item.ComputerName)
             .ThenBy(item => item.Date)
             .ThenByDescending(item => item.DurationSeconds)
             .ToList();
@@ -277,6 +291,7 @@ internal sealed class ExcelReportDataBuilder(
     private static IReadOnlyList<ExcelRenderRow> BuildRenders(
         IReadOnlyCollection<RenderSession> renders,
         IReadOnlyDictionary<Guid, string> employeeNames,
+        IReadOnlyDictionary<Guid, string> computerNames,
         ReportRange range) => renders
         .Select(item => (Session: item, Interval: ReportTime.Clip(
             item.StartedAtUtc, item.EndedAtUtc, range.StartUtc, range.EffectiveEndUtc)))
@@ -284,6 +299,8 @@ internal sealed class ExcelReportDataBuilder(
         .Select(item => new ExcelRenderRow(
             item.Session.EmployeeId,
             employeeNames[item.Session.EmployeeId],
+            item.Session.ComputerId,
+            computerNames.GetValueOrDefault(item.Session.ComputerId) ?? "Неизвестный компьютер",
             item.Session.Type,
             item.Session.Program,
             item.Interval!.Value.StartUtc,
@@ -292,12 +309,14 @@ internal sealed class ExcelReportDataBuilder(
             item.Session.DetectionConfidence,
             item.Session.DetectionReason))
         .OrderBy(item => item.EmployeeName)
+        .ThenBy(item => item.ComputerName)
         .ThenBy(item => item.StartedAtUtc)
         .ToList();
 
     private static IReadOnlyList<ExcelIdleRow> BuildIdle(
         IReadOnlyCollection<HumanStateSession> human,
         IReadOnlyDictionary<Guid, string> employeeNames,
+        IReadOnlyDictionary<Guid, string> computerNames,
         ReportRange range) => human.Where(item => item.State == HumanState.Idle)
         .Select(item => (Session: item, Interval: ReportTime.Clip(
             item.StartedAtUtc, item.EndedAtUtc, range.StartUtc, range.EffectiveEndUtc)))
@@ -305,9 +324,12 @@ internal sealed class ExcelReportDataBuilder(
         .Select(item => new ExcelIdleRow(
             item.Session.EmployeeId,
             employeeNames[item.Session.EmployeeId],
+            item.Session.ComputerId,
+            computerNames.GetValueOrDefault(item.Session.ComputerId) ?? "Неизвестный компьютер",
             item.Interval!.Value.StartUtc,
             item.Interval.Value.EndUtc))
         .OrderBy(item => item.EmployeeName)
+        .ThenBy(item => item.ComputerName)
         .ThenBy(item => item.StartedAtUtc)
         .ToList();
 

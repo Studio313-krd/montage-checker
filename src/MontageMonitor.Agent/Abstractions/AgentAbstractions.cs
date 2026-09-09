@@ -90,7 +90,18 @@ internal interface IAgentApiClient : IDisposable
         HeartbeatRequest heartbeat,
         CancellationToken cancellationToken);
 
-    Task<AgentConfigurationResponse?> GetConfigurationAsync(CancellationToken cancellationToken);
+    Task<AgentConfigurationResponse?> GetConfigurationAsync(
+        Guid? operatorSessionId,
+        CancellationToken cancellationToken);
+
+    Task<AgentOperatorOptionsResponse?> GetOperatorOptionsAsync(
+        Guid? operatorSessionId,
+        CancellationToken cancellationToken);
+
+    Task<AgentOperatorSessionResponse> StartOperatorSessionAsync(
+        Guid employeeId,
+        string pin,
+        CancellationToken cancellationToken);
 
     Task<HeartbeatSendResult> UploadScreenshotAsync(
         QueuedScreenshot screenshot,
@@ -153,5 +164,6 @@ internal enum HeartbeatSendResult
     Sent,
     RetryLater,
     Unauthorized,
+    OperatorSelectionRequired,
     Rejected,
 }

@@ -54,6 +54,7 @@ services:
       Bootstrap__OwnerPassword: ${OWNER_PASSWORD:-}
       Bootstrap__OwnerDisplayName: ${OWNER_DISPLAY_NAME:-Владелец}
       Company__TimeZone: ${COMPANY_TIME_ZONE:-Europe/Moscow}
+      Company__DailySelectionHour: ${DAILY_OPERATOR_SELECTION_HOUR:-6}
       ScreenshotStorage__RootPath: /data/screenshots
       ScreenshotStorage__MaxUploadBytes: ${SCREENSHOT_MAX_UPLOAD_BYTES:-8388608}
       DataProtection__KeysPath: /data/keys

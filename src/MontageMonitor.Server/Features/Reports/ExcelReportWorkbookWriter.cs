@@ -33,9 +33,11 @@ internal sealed class ExcelReportWorkbookWriter
     {
         string[] headers =
         [
-            "Сотрудник", "Дата", "Первое событие", "Последнее событие", "Общее время",
-            "Продуктивное время", "Активная работа", "Рендер", "Прокси", "Фоновая обработка",
-            "Простой", "Locked", "Offline", "Количество снимков",
+            "Сотрудник", "Дата", "Первое событие", "Последнее событие", "Человеко-время без пересечений",
+            "Продуктивное время без пересечений", "Активная работа без пересечений",
+            "Рендер, машино-время", "Прокси, машино-время", "Фоновая обработка, машино-время",
+            "Простой без пересечений", "Locked без пересечений", "Offline без пересечений",
+            "Использовано компьютеров", "Параллельная работа", "Количество снимков",
         ];
         WriteHeaders(sheet, headers);
         var row = 2;
@@ -54,11 +56,13 @@ internal sealed class ExcelReportWorkbookWriter
             WriteDuration(sheet.Cell(row, 11), item.IdleSeconds);
             WriteDuration(sheet.Cell(row, 12), item.LockedSeconds);
             WriteDuration(sheet.Cell(row, 13), item.OfflineSeconds);
-            sheet.Cell(row, 14).Value = item.ScreenshotCount;
+            sheet.Cell(row, 14).Value = item.ComputerCount;
+            WriteDuration(sheet.Cell(row, 15), item.ParallelSeconds);
+            sheet.Cell(row, 16).Value = item.ScreenshotCount;
             row++;
         }
 
-        FinishSheet(sheet, headers.Length, row - 1, [28, 13, 21, 21, 17, 20, 18, 15, 15, 22, 15, 15, 15, 20]);
+        FinishSheet(sheet, headers.Length, row - 1, [28, 13, 21, 21, 28, 30, 28, 24, 24, 31, 24, 24, 24, 24, 22, 20]);
     }
 
     private static void WriteTimeline(IXLWorksheet sheet, ExcelReportData data)
@@ -89,27 +93,28 @@ internal sealed class ExcelReportWorkbookWriter
 
     private static void WriteApplications(IXLWorksheet sheet, ExcelReportData data)
     {
-        string[] headers = ["Сотрудник", "Приложение", "Длительность", "Классификация", "Дата"];
+        string[] headers = ["Сотрудник", "Компьютер", "Приложение", "Длительность на ПК", "Классификация", "Дата"];
         WriteHeaders(sheet, headers);
         var row = 2;
         foreach (var item in data.Applications)
         {
             sheet.Cell(row, 1).Value = item.EmployeeName;
-            sheet.Cell(row, 2).Value = item.Application;
-            WriteDuration(sheet.Cell(row, 3), item.DurationSeconds);
-            sheet.Cell(row, 4).Value = ClassificationLabel(item.Classification);
-            WriteDate(sheet.Cell(row, 5), item.Date);
+            sheet.Cell(row, 2).Value = item.ComputerName;
+            sheet.Cell(row, 3).Value = item.Application;
+            WriteDuration(sheet.Cell(row, 4), item.DurationSeconds);
+            sheet.Cell(row, 5).Value = ClassificationLabel(item.Classification);
+            WriteDate(sheet.Cell(row, 6), item.Date);
             row++;
         }
 
-        FinishSheet(sheet, headers.Length, row - 1, [28, 32, 17, 22, 13]);
+        FinishSheet(sheet, headers.Length, row - 1, [28, 24, 32, 21, 22, 13]);
     }
 
     private static void WriteRenders(IXLWorksheet sheet, ExcelReportData data)
     {
         string[] headers =
         [
-            "Сотрудник", "Тип", "Приложение", "Начало", "Конец", "Длительность", "Результат",
+            "Сотрудник", "Компьютер", "Тип", "Приложение", "Начало", "Конец", "Длительность на ПК", "Результат",
             "Уверенность определения", "Причина определения",
         ];
         WriteHeaders(sheet, headers);
@@ -117,36 +122,38 @@ internal sealed class ExcelReportWorkbookWriter
         foreach (var item in data.Renders)
         {
             sheet.Cell(row, 1).Value = item.EmployeeName;
-            sheet.Cell(row, 2).Value = ProcessingTypeLabel(item.Type);
-            sheet.Cell(row, 3).Value = item.Application;
-            WriteDateTime(sheet.Cell(row, 4), item.StartedAtUtc, data.Range.TimeZone);
-            WriteDateTime(sheet.Cell(row, 5), item.EndedAtUtc, data.Range.TimeZone);
-            WriteDuration(sheet.Cell(row, 6), item.DurationSeconds);
-            sheet.Cell(row, 7).Value = item.Output ?? string.Empty;
-            sheet.Cell(row, 8).Value = item.DetectionConfidence / 100d;
-            sheet.Cell(row, 8).Style.NumberFormat.Format = "0%";
-            sheet.Cell(row, 9).Value = item.DetectionReason;
+            sheet.Cell(row, 2).Value = item.ComputerName;
+            sheet.Cell(row, 3).Value = ProcessingTypeLabel(item.Type);
+            sheet.Cell(row, 4).Value = item.Application;
+            WriteDateTime(sheet.Cell(row, 5), item.StartedAtUtc, data.Range.TimeZone);
+            WriteDateTime(sheet.Cell(row, 6), item.EndedAtUtc, data.Range.TimeZone);
+            WriteDuration(sheet.Cell(row, 7), item.DurationSeconds);
+            sheet.Cell(row, 8).Value = item.Output ?? string.Empty;
+            sheet.Cell(row, 9).Value = item.DetectionConfidence / 100d;
+            sheet.Cell(row, 9).Style.NumberFormat.Format = "0%";
+            sheet.Cell(row, 10).Value = item.DetectionReason;
             row++;
         }
 
-        FinishSheet(sheet, headers.Length, row - 1, [28, 20, 28, 21, 21, 17, 54, 25, 54]);
+        FinishSheet(sheet, headers.Length, row - 1, [28, 24, 20, 28, 21, 21, 21, 54, 25, 54]);
     }
 
     private static void WriteIdle(IXLWorksheet sheet, ExcelReportData data)
     {
-        string[] headers = ["Сотрудник", "Начало", "Конец", "Длительность"];
+        string[] headers = ["Сотрудник", "Компьютер", "Начало", "Конец", "Длительность на ПК"];
         WriteHeaders(sheet, headers);
         var row = 2;
         foreach (var item in data.Idle)
         {
             sheet.Cell(row, 1).Value = item.EmployeeName;
-            WriteDateTime(sheet.Cell(row, 2), item.StartedAtUtc, data.Range.TimeZone);
-            WriteDateTime(sheet.Cell(row, 3), item.EndedAtUtc, data.Range.TimeZone);
-            WriteDuration(sheet.Cell(row, 4), item.DurationSeconds);
+            sheet.Cell(row, 2).Value = item.ComputerName;
+            WriteDateTime(sheet.Cell(row, 3), item.StartedAtUtc, data.Range.TimeZone);
+            WriteDateTime(sheet.Cell(row, 4), item.EndedAtUtc, data.Range.TimeZone);
+            WriteDuration(sheet.Cell(row, 5), item.DurationSeconds);
             row++;
         }
 
-        FinishSheet(sheet, headers.Length, row - 1, [28, 21, 21, 17]);
+        FinishSheet(sheet, headers.Length, row - 1, [28, 24, 21, 21, 21]);
     }
 
     private static void WriteHeaders(IXLWorksheet sheet, IReadOnlyList<string> headers)

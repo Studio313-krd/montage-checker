@@ -44,6 +44,7 @@ Production-версия должна находиться в отдельной 
 | --- | ---: | --- |
 | `APP_VERSION` | `latest` | Локальный tag собираемых образов |
 | `COMPANY_TIME_ZONE` | `Europe/Moscow` | Часовой пояс отчётов |
+| `DAILY_OPERATOR_SELECTION_HOUR` | `6` | Локальный час обязательного ежедневного выбора монтажёра |
 | `SCREENSHOT_MAX_UPLOAD_BYTES` | `8388608` | Максимальный размер JPEG, байт |
 | `BACKUP_RETENTION_DAYS` | `14` | Срок хранения архивов |
 | `BACKUP_INTERVAL_SECONDS` | `86400` | Интервал между архивами, 24 часа |
@@ -110,6 +111,8 @@ https://monitor.example.com/
 `Database__ApplyMigrationsOnStartup=true` задано в Compose. Server ожидает healthy PostgreSQL и применяет все отсутствующие EF Core migrations до готовности HTTP. Уже применённые migrations пропускаются.
 
 Перед обновлением всегда создавайте ручной архив. Не запускайте одновременно несколько экземпляров Server, пока migration startup не заменён отдельной release-задачей.
+
+При переходе на Agent `0.9.0` сначала обновите Server/SPA через **Pull and redeploy** и убедитесь, что в **Управление → Сотрудники** появились PIN. Только после этого заменяйте EXE на рабочих ПК. Старые Agent `0.8.0` продолжают отправлять данные по прежней привязке, поэтому сервер можно обновить заранее без остановки учёта. Пошаговая замена уже установленных агентов описана в [OPERATOR_SELECTION.md](OPERATOR_SELECTION.md).
 
 ## 7. Резервное копирование
 

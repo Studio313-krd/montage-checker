@@ -21,7 +21,8 @@ public sealed record HeartbeatRequest(
     double MemoryLoadPercent,
     RenderTelemetrySnapshot? RenderTelemetry = null,
     ProxyTelemetrySnapshot? ProxyTelemetry = null,
-    ScreenshotSkippedEvent? ScreenshotEvent = null);
+    ScreenshotSkippedEvent? ScreenshotEvent = null,
+    Guid? OperatorSessionId = null);
 
 public sealed record HeartbeatResponse(
     Guid EventId,

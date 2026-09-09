@@ -14,7 +14,8 @@ public sealed record ScreenshotUploadMetadata(
     string? ForegroundProcess,
     string? ForegroundWindowTitle,
     HumanState HumanState,
-    MachineState MachineState);
+    MachineState MachineState,
+    Guid? OperatorSessionId = null);
 
 public sealed record ScreenshotUploadResponse(
     Guid EventId,

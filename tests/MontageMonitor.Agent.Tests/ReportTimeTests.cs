@@ -1,4 +1,6 @@
+using MontageMonitor.Server.Domain;
 using MontageMonitor.Server.Features.Reports;
+using MontageMonitor.Shared.States;
 using Xunit;
 
 namespace MontageMonitor.Agent.Tests;
@@ -67,5 +69,42 @@ public sealed class ReportTimeTests
             rangeStart.AddHours(-2),
             rangeStart,
             rangeStart.AddHours(8)));
+    }
+
+    [Fact]
+    public void SummarizeHumanStates_DoesNotDoubleCountThreeComputers()
+    {
+        var start = new DateTimeOffset(2026, 9, 4, 6, 0, 0, TimeSpan.Zero);
+        var firstComputer = Guid.NewGuid();
+        var secondComputer = Guid.NewGuid();
+        var thirdComputer = Guid.NewGuid();
+        var sessions = new[]
+        {
+            Session(firstComputer, HumanState.Idle, start, start.AddHours(2)),
+            Session(secondComputer, HumanState.Active, start.AddHours(1), start.AddHours(3)),
+            Session(thirdComputer, HumanState.Offline, start, start.AddHours(3)),
+        };
+
+        var result = ReportTime.SummarizeHumanStates(sessions, start, start.AddHours(3));
+
+        Assert.Equal(10_800, result.TotalSeconds);
+        Assert.Equal(7_200, result.ActiveSeconds);
+        Assert.Equal(3_600, result.IdleSeconds);
+        Assert.Equal(0, result.OfflineSeconds);
+        Assert.Equal(3_600, result.ParallelSeconds);
+        Assert.Equal(2, result.ComputerCount);
+
+        static HumanStateSession Session(
+            Guid computerId,
+            HumanState state,
+            DateTimeOffset startedAtUtc,
+            DateTimeOffset endedAtUtc) => new()
+            {
+                EmployeeId = Guid.NewGuid(),
+                ComputerId = computerId,
+                State = state,
+                StartedAtUtc = startedAtUtc,
+                EndedAtUtc = endedAtUtc,
+            };
     }
 }

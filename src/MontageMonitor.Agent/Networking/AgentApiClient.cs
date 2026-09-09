@@ -49,6 +49,7 @@ internal sealed class AgentApiClient : IAgentApiClient
             {
                 HttpStatusCode.OK => HeartbeatSendResult.Sent,
                 HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => HeartbeatSendResult.Unauthorized,
+                (HttpStatusCode)428 => HeartbeatSendResult.OperatorSelectionRequired,
                 HttpStatusCode.BadRequest => HeartbeatSendResult.Rejected,
                 _ when (int)response.StatusCode >= 500 => HeartbeatSendResult.RetryLater,
                 _ => HeartbeatSendResult.RetryLater,
@@ -62,11 +63,15 @@ internal sealed class AgentApiClient : IAgentApiClient
     }
 
     public async Task<AgentConfigurationResponse?> GetConfigurationAsync(
+        Guid? operatorSessionId,
         CancellationToken cancellationToken)
     {
         try
         {
-            using var response = await _httpClient.GetAsync("api/agent/config", cancellationToken);
+            var path = operatorSessionId.HasValue
+                ? $"api/agent/config?operatorSessionId={operatorSessionId.Value:D}"
+                : "api/agent/config";
+            using var response = await _httpClient.GetAsync(path, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 return null;
@@ -81,6 +86,59 @@ internal sealed class AgentApiClient : IAgentApiClient
         {
             return null;
         }
+    }
+
+    public async Task<AgentOperatorOptionsResponse?> GetOperatorOptionsAsync(
+        Guid? operatorSessionId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var path = operatorSessionId.HasValue
+                ? $"api/agent/operators?operatorSessionId={operatorSessionId.Value:D}"
+                : "api/agent/operators";
+            using var response = await _httpClient.GetAsync(path, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            return await response.Content.ReadFromJsonAsync<AgentOperatorOptionsResponse>(
+                JsonOptions,
+                cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
+
+    public async Task<AgentOperatorSessionResponse> StartOperatorSessionAsync(
+        Guid employeeId,
+        string pin,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _httpClient.PostAsJsonAsync(
+            "api/agent/operator-session",
+            new StartAgentOperatorSessionRequest(employeeId, pin),
+            JsonOptions,
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var message = response.StatusCode switch
+            {
+                HttpStatusCode.Unauthorized => "Неверный PIN-код.",
+                HttpStatusCode.TooManyRequests => "Слишком много попыток. Подождите одну минуту.",
+                _ => $"Сервер отклонил выбор монтажёра: HTTP {(int)response.StatusCode}.",
+            };
+            throw new OperatorSelectionException(message);
+        }
+
+        return await response.Content.ReadFromJsonAsync<AgentOperatorSessionResponse>(
+                   JsonOptions,
+                   cancellationToken)
+               ?? throw new OperatorSelectionException("Сервер вернул пустой ответ.");
     }
 
     public async Task<HeartbeatSendResult> UploadScreenshotAsync(
@@ -116,6 +174,7 @@ internal sealed class AgentApiClient : IAgentApiClient
             {
                 HttpStatusCode.OK or HttpStatusCode.Created => HeartbeatSendResult.Sent,
                 HttpStatusCode.Unauthorized => HeartbeatSendResult.Unauthorized,
+                (HttpStatusCode)428 => HeartbeatSendResult.OperatorSelectionRequired,
                 HttpStatusCode.BadRequest or HttpStatusCode.Forbidden or
                     HttpStatusCode.RequestEntityTooLarge or
                     HttpStatusCode.UnsupportedMediaType => HeartbeatSendResult.Rejected,
@@ -172,3 +231,5 @@ internal sealed class AgentApiClient : IAgentApiClient
 }
 
 internal sealed class AgentEnrollmentException(string message) : Exception(message);
+
+internal sealed class OperatorSelectionException(string message) : Exception(message);

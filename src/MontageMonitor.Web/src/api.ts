@@ -4,6 +4,7 @@ import type {
   AuthSession,
   DashboardData,
   Employee,
+  EmployeeOperatorPin,
   EmployeeInput,
   EnrollmentToken,
   ManagedComputer,
@@ -194,6 +195,14 @@ export function createEmployee(input: EmployeeInput): Promise<Employee> {
 
 export function updateEmployee(id: string, input: EmployeeInput & { isActive: boolean }): Promise<Employee> {
   return sendJson<Employee>(`/api/employees/${id}`, 'PUT', input)
+}
+
+export function getEmployeeOperatorPins(signal?: AbortSignal): Promise<EmployeeOperatorPin[]> {
+  return getJson<EmployeeOperatorPin[]>('/api/admin/employees/operator-pins', signal)
+}
+
+export function regenerateEmployeeOperatorPin(employeeId: string): Promise<EmployeeOperatorPin> {
+  return sendJson<EmployeeOperatorPin>(`/api/admin/employees/${employeeId}/operator-pin/regenerate`, 'POST', {})
 }
 
 export function createEnrollmentToken(employeeId: string, expiresInHours = 24): Promise<EnrollmentToken> {

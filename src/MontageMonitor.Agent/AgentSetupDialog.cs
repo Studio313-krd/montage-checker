@@ -170,7 +170,7 @@ internal sealed class AgentSetupDialog : Form
                 _tokenTextBox.Text,
                 _cancellation.Token);
             ServerBaseUrl = serverUri.GetLeftPart(UriPartial.Path).TrimEnd('/');
-            SetStatus("Компьютер подключён. MontageMonitor начинает работу.", Success);
+            SetStatus("Компьютер подключён. Теперь выберите монтажёра.", Success);
             DialogResult = DialogResult.OK;
             Close();
         }

@@ -79,6 +79,24 @@ internal sealed class AgentSettingsStore
         Save(settings);
     }
 
+    public void SaveOperatorSession(AgentSettings settings, AgentOperatorSessionResponse session)
+    {
+        settings.OperatorSessionId = session.SessionId;
+        settings.SelectedEmployeeId = session.EmployeeId;
+        settings.SelectedEmployeeName = session.EmployeeName;
+        settings.OperatorSessionExpiresAtUtc = session.ExpiresAtUtc;
+        Save(settings);
+    }
+
+    public void ClearOperatorSession(AgentSettings settings)
+    {
+        settings.OperatorSessionId = null;
+        settings.SelectedEmployeeId = null;
+        settings.SelectedEmployeeName = null;
+        settings.OperatorSessionExpiresAtUtc = null;
+        Save(settings);
+    }
+
     public string GetDeviceAccessToken(AgentSettings settings)
     {
         var protectedToken = Convert.FromBase64String(settings.ProtectedDeviceAccessToken);

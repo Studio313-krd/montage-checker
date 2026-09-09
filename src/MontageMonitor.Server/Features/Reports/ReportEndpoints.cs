@@ -89,20 +89,24 @@ public static class ReportEndpoints
                 .Concat(employeeMachine.Where(item => item.State != MachineState.Normal)
                     .Select(item => ReportTime.Clip(item.StartedAtUtc, item.EndedAtUtc, range.StartUtc, range.EffectiveEndUtc)))
                 .Where(item => item.HasValue).Select(item => item!.Value);
+            var humanTime = ReportTime.SummarizeHumanStates(
+                employeeHuman,
+                range.StartUtc,
+                range.EffectiveEndUtc);
             return new EmployeeSummaryResponse(
                 employee.Id,
                 employee.Name,
                 observedIntervals.Count == 0 ? null : observedIntervals.Min(item => item.StartUtc),
                 observedIntervals.Count == 0 ? null : observedIntervals.Max(item => item.EndUtc),
-                ReportTime.UnionSeconds(trackedIntervals),
+                humanTime.TotalSeconds,
                 ReportTime.UnionSeconds(productive),
-                StateSeconds(employeeHuman, HumanState.Active),
+                humanTime.ActiveSeconds,
                 StateSeconds(employeeMachine, MachineState.Render),
                 StateSeconds(employeeMachine, MachineState.Proxy),
                 StateSeconds(employeeMachine, MachineState.BackgroundProcessing),
-                StateSeconds(employeeHuman, HumanState.Idle),
-                StateSeconds(employeeHuman, HumanState.Locked),
-                StateSeconds(employeeHuman, HumanState.Offline));
+                humanTime.IdleSeconds,
+                humanTime.LockedSeconds,
+                humanTime.OfflineSeconds);
 
             double StateSeconds<TSession, TState>(IEnumerable<TSession> sessions, TState state)
                 where TState : struct, Enum => sessions.Sum(session => session switch

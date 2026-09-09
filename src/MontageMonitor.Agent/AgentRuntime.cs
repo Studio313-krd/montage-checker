@@ -26,6 +26,7 @@ internal sealed class AgentRuntime(
     private ProxyDetectionResult _proxyDetection = new(MachineState.Normal, null);
     private MachineWorkDetection _machineDetection = MachineWorkDetection.Normal;
     private MachineState? _lastQueuedMachineState;
+    private bool _operatorSelectionRequired;
 
     public event EventHandler<AgentRuntimeStatus>? StatusChanged;
     public event EventHandler<Exception>? FatalError;
@@ -70,9 +71,20 @@ internal sealed class AgentRuntime(
         while (!cancellationToken.IsCancellationRequested)
         {
             var now = DateTimeOffset.UtcNow;
+            if (!settings.HasValidOperatorSession(now))
+            {
+                Publish(
+                    AgentConnectionState.OperatorSelectionRequired,
+                    _lastSyncAtUtc,
+                    await CountQueuedAsync(cancellationToken));
+                return;
+            }
+
             if (now >= nextConfigurationRefresh)
             {
-                var configuration = await apiClient.GetConfigurationAsync(cancellationToken);
+                var configuration = await apiClient.GetConfigurationAsync(
+                    settings.OperatorSessionId,
+                    cancellationToken);
                 if (configuration is not null)
                 {
                     // Сохраняем весь backward-compatible snapshot: после обновления EXE в нём могут
@@ -111,6 +123,11 @@ internal sealed class AgentRuntime(
             }
 
             await FlushQueueAsync(cancellationToken);
+            if (_operatorSelectionRequired)
+            {
+                return;
+            }
+
             await timer.WaitForNextTickAsync(cancellationToken);
         }
     }
@@ -140,7 +157,7 @@ internal sealed class AgentRuntime(
         return new HeartbeatRequest(
             Guid.NewGuid(),
             settings.AgentId,
-            settings.EmployeeId,
+            settings.SelectedEmployeeId!.Value,
             settings.ComputerId,
             AgentEnvironment.Version,
             timestampUtc,
@@ -156,7 +173,8 @@ internal sealed class AgentRuntime(
             metrics.MemoryLoadPercent,
             _machineDetection.RenderTelemetry,
             _machineDetection.ProxyTelemetry,
-            screenshotEvent);
+            screenshotEvent,
+            settings.OperatorSessionId);
     }
 
     private async Task<ScreenshotSkippedEvent?> CaptureScreenshotsAsync(
@@ -190,7 +208,7 @@ internal sealed class AgentRuntime(
             var metadata = new ScreenshotUploadMetadata(
                 Guid.NewGuid(),
                 settings.AgentId,
-                settings.EmployeeId,
+                settings.SelectedEmployeeId!.Value,
                 settings.ComputerId,
                 timestampUtc,
                 screenshot.ScreenIndex,
@@ -199,7 +217,8 @@ internal sealed class AgentRuntime(
                 activity.ProcessName,
                 activity.WindowTitle,
                 idle.HumanState,
-                _machineDetection.MachineState);
+                _machineDetection.MachineState,
+                settings.OperatorSessionId);
             await screenshotQueue.EnqueueAsync(metadata, screenshot.JpegData, cancellationToken);
         }
 
@@ -237,6 +256,13 @@ internal sealed class AgentRuntime(
                         null,
                         await CountQueuedAsync(cancellationToken));
                     return;
+                case HeartbeatSendResult.OperatorSelectionRequired:
+                    _operatorSelectionRequired = true;
+                    Publish(
+                        AgentConnectionState.OperatorSelectionRequired,
+                        _lastSyncAtUtc,
+                        await CountQueuedAsync(cancellationToken));
+                    return;
                 default:
                     await eventQueue.MarkFailedAsync(
                         queued.EventId,
@@ -272,6 +298,13 @@ internal sealed class AgentRuntime(
                     Publish(
                         AgentConnectionState.EnrollmentRequired,
                         null,
+                        await CountQueuedAsync(cancellationToken));
+                    return;
+                case HeartbeatSendResult.OperatorSelectionRequired:
+                    _operatorSelectionRequired = true;
+                    Publish(
+                        AgentConnectionState.OperatorSelectionRequired,
+                        _lastSyncAtUtc,
                         await CountQueuedAsync(cancellationToken));
                     return;
                 default:
@@ -354,4 +387,5 @@ internal enum AgentConnectionState
     Connected,
     Offline,
     EnrollmentRequired,
+    OperatorSelectionRequired,
 }

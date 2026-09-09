@@ -1,6 +1,6 @@
 # PostgreSQL schema
 
-Схема MontageMonitor создаётся EF Core migrations `InitialCreate`, `AddAgentEnrollmentTokens`, `AddUserAuthenticationState`, `AddAgentHeartbeatDetails`, `AddActivityAggregationIntegrity`, `AddRenderDetection`, `AddProxyDetection` и `AddScreenshotCapture`. Имена таблиц, колонок, ключей и индексов используют `snake_case`. Все моменты времени хранятся как PostgreSQL `timestamp with time zone`; .NET-модели используют `DateTimeOffset` и UTC.
+Схема MontageMonitor создаётся EF Core migrations `InitialCreate`, `AddAgentEnrollmentTokens`, `AddUserAuthenticationState`, `AddAgentHeartbeatDetails`, `AddActivityAggregationIntegrity`, `AddRenderDetection`, `AddProxyDetection`, `AddScreenshotCapture` и `AddDailyOperatorSelection`. Имена таблиц, колонок, ключей и индексов используют `snake_case`. Все моменты времени хранятся как PostgreSQL `timestamp with time zone`; .NET-модели используют `DateTimeOffset` и UTC.
 
 ## Таблицы
 
@@ -21,6 +21,8 @@
 - `heartbeats.event_id` имеет unique index; приём использует `ON CONFLICT DO NOTHING`, поэтому даже одновременные повторы UUID не создают дубликат.
 - `screenshots.event_id` имеет unique index; повторная multipart-загрузка возвращает существующий результат, не создавая второй файл или metadata.
 - Heartbeat хранит версию Agent, пользователя и имя Windows-компьютера, foreground process/path/title, idle и загрузку CPU/RAM. Для Render/Proxy дополнительно сохраняются process CPU/working set/I/O, дочерние процессы, выходной путь/размер, confidence и reason; GPU используется только Render и остаётся nullable.
+- `employees.operator_pin_protected` хранит четырёхзначный PIN в обратимо зашифрованном ASP.NET Core Data Protection payload. Ключи находятся в отдельном постоянном Docker volume и не попадают в PostgreSQL или Git.
+- `agent_operator_sessions` связывает device Agent, физический компьютер и фактически выбранного сотрудника на интервал до ежедневной границы 06:00. Исторические heartbeat и sessions продолжают хранить `employee_id`, поэтому последующее переключение не меняет прошлые данные.
 - Имя компьютера уникально для сотрудника без учёта регистра через `computers.normalized_name`.
 - Enrollment token хранится только как hash, имеет срок действия и отметку однократного использования.
 - Логины пользователей и сотрудников уникальны в нормализованном виде.
@@ -44,6 +46,7 @@ Migration `AddUserAuthenticationState` деактивирует возможны
 - `employee_id + timestamp/start`;
 - `computer_id + timestamp/start`;
 - `employee_id + process_name + start`;
+- operator session по `agent_id`, `computer_id`, `employee_id` и времени начала; для одного Agent разрешена только одна незавершённая сессия;
 - `type/state + start`;
 - screenshot retention по `timestamp_utc + file_deleted_at_utc`;
 - audit по пользователю, времени и entity.

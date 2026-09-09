@@ -48,16 +48,15 @@ public sealed class AgentAuthenticationHandler(
             from credential in dbContext.AgentCredentials.AsNoTracking()
             join agent in dbContext.Agents.AsNoTracking() on credential.AgentId equals agent.Id
             join computer in dbContext.Computers.AsNoTracking() on agent.ComputerId equals computer.Id
-            join employee in dbContext.Employees.AsNoTracking() on computer.EmployeeId equals employee.Id
             where credential.Id == credentialId
-            select new { credential, agent, computer, employee })
+            select new { credential, agent, computer })
             .SingleOrDefaultAsync(Context.RequestAborted);
 
         var now = timeProvider.GetUtcNow();
         if (data is null || data.credential.RevokedAtUtc is not null ||
             data.credential.ExpiresAtUtc <= now || data.agent.RevokedAtUtc is not null ||
             data.agent.Status == AgentStatus.Revoked || data.computer.IsRevoked ||
-            !data.employee.IsActive || !credentialService.Verify(data.credential, token[(separator + 1)..]))
+            !credentialService.Verify(data.credential, token[(separator + 1)..]))
         {
             return AuthenticateResult.Fail("Device token недействителен.");
         }
@@ -65,7 +64,7 @@ public sealed class AgentAuthenticationHandler(
         var claims = new[]
         {
             new Claim(AgentAuthenticationDefaults.AgentIdClaim, data.agent.Id.ToString()),
-            new Claim(AgentAuthenticationDefaults.EmployeeIdClaim, data.employee.Id.ToString()),
+            new Claim(AgentAuthenticationDefaults.EmployeeIdClaim, data.computer.EmployeeId.ToString()),
             new Claim(AgentAuthenticationDefaults.ComputerIdClaim, data.computer.Id.ToString()),
         };
         var identity = new ClaimsIdentity(claims, Scheme.Name);

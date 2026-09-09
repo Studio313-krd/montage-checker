@@ -26,6 +26,8 @@ internal sealed record ExcelSummaryRow(
     double IdleSeconds,
     double LockedSeconds,
     double OfflineSeconds,
+    int ComputerCount,
+    double ParallelSeconds,
     int ScreenshotCount);
 
 internal sealed record ExcelTimelineRow(
@@ -46,6 +48,8 @@ internal sealed record ExcelTimelineRow(
 internal sealed record ExcelApplicationRow(
     Guid EmployeeId,
     string EmployeeName,
+    Guid ComputerId,
+    string ComputerName,
     DateOnly Date,
     string Application,
     ApplicationClassification Classification,
@@ -54,6 +58,8 @@ internal sealed record ExcelApplicationRow(
 internal sealed record ExcelRenderRow(
     Guid EmployeeId,
     string EmployeeName,
+    Guid ComputerId,
+    string ComputerName,
     ProcessingType Type,
     string Application,
     DateTimeOffset StartedAtUtc,
@@ -68,6 +74,8 @@ internal sealed record ExcelRenderRow(
 internal sealed record ExcelIdleRow(
     Guid EmployeeId,
     string EmployeeName,
+    Guid ComputerId,
+    string ComputerName,
     DateTimeOffset StartedAtUtc,
     DateTimeOffset EndedAtUtc)
 {

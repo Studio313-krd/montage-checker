@@ -6,7 +6,7 @@ Self-hosted система учёта производственного вре�
 
 ## Состояние разработки
 
-Все этапы 1–13 завершены. Помимо solution, PostgreSQL-схемы и ролевой авторизации реализован рабочий Windows Agent: регистрация одноразовым кодом, device-specific доступ, heartbeat, foreground application, idle, CPU/RAM и SQLite outbox. Независимые RenderDetector и ProxyDetector отличают просто открытый монтажный софт от реальной машинной работы по совокупности process-нагрузки и роста файлов. Agent делает сжатые JPEG-снимки разрешённых интерактивных сессий, учитывает privacy-исключения и доставляет файлы отдельной offline-очередью. Server проверяет реальное содержимое JPEG, хранит только metadata и безопасный путь в PostgreSQL, а файлы — в отдельном volume с настраиваемым retention. Русскоязычное React-приложение включает live dashboard, дневной timeline, отчёты, защищённую галерею скриншотов, выгрузку Excel и полноценный раздел управления сотрудниками, компьютерами, кодами Agent, пользователями и ролями. Production Compose добавляет Caddy с автоматическим HTTPS, внутреннюю сеть без публичных портов базы/API, проверяемый ежедневный backup и защищённую подтверждающей фразой процедуру restore. Unit и disposable Docker integration tests покрывают критические вычисления, offline-очередь, permissions, Agent API и Excel download.
+Все этапы 1–13 завершены. Помимо solution, PostgreSQL-схемы и ролевой авторизации реализован рабочий Windows Agent: регистрация физического ПК одноразовым кодом, ежедневный выбор фактического монтажёра по имени и четырёхзначному PIN, device-specific доступ, heartbeat, foreground application, idle, CPU/RAM и SQLite outbox. Один сотрудник может работать на нескольких ПК, а общий ПК — переходить между сотрудниками без повторной регистрации. Независимые RenderDetector и ProxyDetector отличают просто открытый монтажный софт от реальной машинной работы по совокупности process-нагрузки и роста файлов. Excel устраняет пересечения человеко-времени между ПК, но сохраняет суммарное машино-время параллельных рендеров. Agent делает сжатые JPEG-снимки разрешённых интерактивных сессий, учитывает privacy-исключения и доставляет файлы отдельной offline-очередью. Server проверяет реальное содержимое JPEG, хранит только metadata и безопасный путь в PostgreSQL, а файлы — в отдельном volume с настраиваемым retention. Русскоязычное React-приложение включает live dashboard, дневной timeline, отчёты, защищённую галерею скриншотов, выгрузку Excel и полноценный раздел управления. Production Compose добавляет Caddy с автоматическим HTTPS, внутреннюю сеть без публичных портов базы/API, проверяемый ежедневный backup и защищённую процедуру restore.
 
 ## Компоненты
 
@@ -72,6 +72,8 @@ dotnet publish src/MontageMonitor.Agent -p:PublishProfile=Windows-x64 -o artifac
 
 Результат: единственный файл `artifacts/agent/win-x64/MontageMonitor.Agent.exe`. Пользователю не нужны командная строка и отдельно установленный .NET Runtime.
 
+Agent `0.9.0` ежедневно после 06:00 требует выбрать сотрудника и подтвердить четырёхзначный PIN. Порядок работы на общих ПК и безопасное обновление уже установленного `0.8.0` описаны в [OPERATOR_SELECTION.md](OPERATOR_SELECTION.md).
+
 Пошаговая установка и поведение агента описаны в [AGENT.md](AGENT.md).
 
 Интервалы сотрудника доступны авторизованному Web/API-клиенту через `GET /api/employees/{employeeId}/activity/sessions`. Диапазон ограничен 31 днём, а права доступа совпадают с областью видимости сотрудников для OWNER/ADMIN/MANAGER/VIEWER.
@@ -123,6 +125,7 @@ docker compose --env-file .env up -d --build
 - [DATABASE.md](DATABASE.md) — схема PostgreSQL, индексы и работа с migrations.
 - [AUTHORIZATION.md](AUTHORIZATION.md) — вход, refresh-ротация, роли и bootstrap OWNER.
 - [AGENT.md](AGENT.md) — сборка, регистрация и эксплуатация Windows Agent.
+- [OPERATOR_SELECTION.md](OPERATOR_SELECTION.md) — ежедневный PIN, общие ПК и обновление старого EXE.
 - [ACTIVITY.md](ACTIVITY.md) — правила построения интервалов и Offline-разрывов.
 - [RENDER.md](RENDER.md) — сигналы, confidence, гистерезис и настройка RenderDetector.
 - [PROXY.md](PROXY.md) — определение Proxy, приоритет папок и admin API.

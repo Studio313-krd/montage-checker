@@ -1,4 +1,4 @@
-param()
+﻿param()
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
@@ -28,6 +28,7 @@ $environmentValues = @{
     BACKUP_ON_START = "false"
 }
 $previousEnvironment = @{}
+$serverContainer = $null
 
 function Invoke-Compose {
     param([string[]]$ComposeArguments)
@@ -117,6 +118,13 @@ try {
     finally {
         Pop-Location
     }
+}
+catch {
+    if (-not [string]::IsNullOrWhiteSpace($serverContainer)) {
+        Write-Warning "Server logs перед очисткой disposable-стенда:"
+        & docker logs $serverContainer 2>&1
+    }
+    throw
 }
 finally {
     $downArguments = $composePrefix + @("down", "--volumes", "--remove-orphans", "--rmi", "local")

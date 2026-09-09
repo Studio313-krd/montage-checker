@@ -90,6 +90,38 @@ public sealed class ActivitySessionBuilderTests
         Assert.Equal(70, render.MaxCpuPercent);
     }
 
+    [Fact]
+    public void Build_ClosesSessionsWhenOperatorChangesOnSameComputer()
+    {
+        var secondEmployee = Guid.NewGuid();
+        var sessions = ActivitySessionBuilder.Build(
+            ComputerId,
+            [
+                Sample(Start, process: "premiere.exe") with { EmployeeId = EmployeeId },
+                Sample(Start.AddSeconds(30), process: "premiere.exe") with { EmployeeId = secondEmployee },
+            ],
+            new Dictionary<string, ApplicationClassification>(),
+            Timing,
+            Start);
+
+        Assert.Collection(
+            sessions.HumanStates,
+            first =>
+            {
+                Assert.Equal(EmployeeId, first.EmployeeId);
+                Assert.Equal(Start.AddSeconds(30), first.EndedAtUtc);
+            },
+            second =>
+            {
+                Assert.Equal(secondEmployee, second.EmployeeId);
+                Assert.Null(second.EndedAtUtc);
+            });
+        Assert.Collection(
+            sessions.Applications,
+            first => Assert.Equal(EmployeeId, first.EmployeeId),
+            second => Assert.Equal(secondEmployee, second.EmployeeId));
+    }
+
     private static ActivitySample Sample(
         DateTimeOffset timestamp,
         HumanState humanState = HumanState.Active,

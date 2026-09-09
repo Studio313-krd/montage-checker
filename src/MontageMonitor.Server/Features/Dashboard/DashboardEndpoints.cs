@@ -44,7 +44,7 @@ public static class DashboardEndpoints
 
         var employeeIds = employees.Select(item => item.Id).ToArray();
         var computers = await dbContext.Computers.AsNoTracking()
-            .Where(item => employeeIds.Contains(item.EmployeeId) && !item.IsRevoked)
+            .Where(item => !item.IsRevoked)
             .ToListAsync(cancellationToken);
         var computerIds = computers.Select(item => item.Id).ToArray();
         if (computerIds.Length == 0)
@@ -102,8 +102,12 @@ public static class DashboardEndpoints
         var cards = new List<DashboardEmployeeResponse>(employees.Count);
         foreach (var employee in employees)
         {
-            var selectedComputer = computers
-                .Where(item => item.EmployeeId == employee.Id)
+            var attributedComputers = computers
+                .Where(item => heartbeatByComputer.GetValueOrDefault(item.Id)?.EmployeeId == employee.Id)
+                .ToList();
+            var selectedComputer = (attributedComputers.Count > 0
+                    ? attributedComputers
+                    : computers.Where(item => item.EmployeeId == employee.Id))
                 .OrderByDescending(item => IsOnline(item.Id))
                 .ThenByDescending(item => agentByComputer.GetValueOrDefault(item.Id)?.LastSeenAtUtc)
                 .ThenByDescending(item => item.LastHeartbeatAtUtc)

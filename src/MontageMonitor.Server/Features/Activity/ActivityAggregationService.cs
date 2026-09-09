@@ -91,7 +91,8 @@ public sealed class ActivityAggregationService(
                 item.RenderOutputFile,
                 item.RenderOutputFileSizeBytes,
                 item.RenderDetectionConfidence,
-                item.RenderDetectionReason))
+                item.RenderDetectionReason,
+                item.EmployeeId))
             .ToListAsync(cancellationToken);
 
         // При конфликтующих событиях с одинаковым временем последнее полученное состояние побеждает.
@@ -112,7 +113,6 @@ public sealed class ActivityAggregationService(
                 StringComparer.OrdinalIgnoreCase,
                 cancellationToken);
         var sessions = ActivitySessionBuilder.Build(
-            employeeId,
             computerId,
             samples,
             classifications,
@@ -299,7 +299,8 @@ public sealed record ActivitySample(
     string? RenderOutputFile,
     long? RenderOutputFileSizeBytes,
     byte? RenderDetectionConfidence,
-    string? RenderDetectionReason);
+    string? RenderDetectionReason,
+    Guid EmployeeId = default);
 
 public sealed record AggregatedActivitySessions(
     IReadOnlyList<ApplicationSession> Applications,
@@ -311,6 +312,19 @@ public static class ActivitySessionBuilder
 {
     public static AggregatedActivitySessions Build(
         Guid employeeId,
+        Guid computerId,
+        IReadOnlyList<ActivitySample> samples,
+        IReadOnlyDictionary<string, ApplicationClassification> classifications,
+        HeartbeatTiming timing,
+        DateTimeOffset createdAtUtc)
+        => Build(
+            computerId,
+            samples.Select(item => item with { EmployeeId = employeeId }).ToList(),
+            classifications,
+            timing,
+            createdAtUtc);
+
+    public static AggregatedActivitySessions Build(
         Guid computerId,
         IReadOnlyList<ActivitySample> samples,
         IReadOnlyDictionary<string, ApplicationClassification> classifications,
@@ -329,34 +343,42 @@ public static class ActivitySessionBuilder
 
         var previous = samples[0];
         var application = OpenApplication(previous);
-        var human = OpenHuman(previous.TimestampUtc, previous.HumanState);
+        var human = OpenHuman(previous);
         var machine = OpenMachine(previous);
         var render = OpenRender(previous);
 
         foreach (var sample in samples.Skip(1))
         {
             var gap = sample.TimestampUtc - previous.TimestampUtc;
-            if (gap.TotalSeconds > timing.OfflineAfterSeconds)
+            var operatorChanged = sample.EmployeeId != previous.EmployeeId;
+            if (gap.TotalSeconds > timing.OfflineAfterSeconds || operatorChanged)
             {
-                var onlineEndedAt = previous.TimestampUtc.AddSeconds(timing.IntervalSeconds);
+                var hasOfflineGap = gap.TotalSeconds > timing.OfflineAfterSeconds;
+                var onlineEndedAt = hasOfflineGap
+                    ? previous.TimestampUtc.AddSeconds(timing.IntervalSeconds)
+                    : sample.TimestampUtc;
                 Close(application, onlineEndedAt);
                 Close(human, onlineEndedAt);
                 Close(machine, onlineEndedAt);
                 Close(render, onlineEndedAt);
                 FinalizeRender(render);
 
-                humanStates.Add(new HumanStateSession
+                if (hasOfflineGap)
                 {
-                    EmployeeId = employeeId,
-                    ComputerId = computerId,
-                    StartedAtUtc = onlineEndedAt,
-                    EndedAtUtc = sample.TimestampUtc,
-                    State = HumanState.Offline,
-                    CreatedAtUtc = createdAtUtc,
-                    UpdatedAtUtc = createdAtUtc,
-                });
+                    humanStates.Add(new HumanStateSession
+                    {
+                        EmployeeId = previous.EmployeeId,
+                        ComputerId = computerId,
+                        StartedAtUtc = onlineEndedAt,
+                        EndedAtUtc = sample.TimestampUtc,
+                        State = HumanState.Offline,
+                        CreatedAtUtc = createdAtUtc,
+                        UpdatedAtUtc = createdAtUtc,
+                    });
+                }
+
                 application = OpenApplication(sample);
-                human = OpenHuman(sample.TimestampUtc, sample.HumanState);
+                human = OpenHuman(sample);
                 machine = OpenMachine(sample);
                 render = OpenRender(sample);
             }
@@ -371,7 +393,7 @@ public static class ActivitySessionBuilder
                 if (previous.HumanState != sample.HumanState)
                 {
                     Close(human, sample.TimestampUtc);
-                    human = OpenHuman(sample.TimestampUtc, sample.HumanState);
+                    human = OpenHuman(sample);
                 }
 
                 if (previous.MachineState != sample.MachineState)
@@ -416,7 +438,7 @@ public static class ActivitySessionBuilder
                 : ApplicationClassification.Neutral;
             var session = new ApplicationSession
             {
-                EmployeeId = employeeId,
+                EmployeeId = sample.EmployeeId,
                 ComputerId = computerId,
                 StartedAtUtc = sample.TimestampUtc,
                 ProcessName = processName,
@@ -430,14 +452,14 @@ public static class ActivitySessionBuilder
             return session;
         }
 
-        HumanStateSession OpenHuman(DateTimeOffset startedAtUtc, HumanState state)
+        HumanStateSession OpenHuman(ActivitySample sample)
         {
             var session = new HumanStateSession
             {
-                EmployeeId = employeeId,
+                EmployeeId = sample.EmployeeId,
                 ComputerId = computerId,
-                StartedAtUtc = startedAtUtc,
-                State = state,
+                StartedAtUtc = sample.TimestampUtc,
+                State = sample.HumanState,
                 CreatedAtUtc = createdAtUtc,
                 UpdatedAtUtc = createdAtUtc,
             };
@@ -450,7 +472,7 @@ public static class ActivitySessionBuilder
             var isProcessing = sample.MachineState is MachineState.Render or MachineState.Proxy;
             var session = new MachineStateSession
             {
-                EmployeeId = employeeId,
+                EmployeeId = sample.EmployeeId,
                 ComputerId = computerId,
                 StartedAtUtc = sample.TimestampUtc,
                 State = sample.MachineState,
@@ -488,7 +510,7 @@ public static class ActivitySessionBuilder
 
             var session = new RenderSession
             {
-                EmployeeId = employeeId,
+                EmployeeId = sample.EmployeeId,
                 ComputerId = computerId,
                 Type = sample.MachineState == MachineState.Proxy ? ProcessingType.Proxy : ProcessingType.Render,
                 Program = program,

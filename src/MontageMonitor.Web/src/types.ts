@@ -65,6 +65,11 @@ export interface Employee {
   idleThresholdSeconds: number
 }
 
+export interface EmployeeOperatorPin {
+  employeeId: string
+  operatorPin: string
+}
+
 export interface AdminUser {
   id: string
   login: string

@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using MontageMonitor.Server.Domain;
+using MontageMonitor.Server.Features.Agents;
 using MontageMonitor.Server.Features.Employees;
 using MontageMonitor.Server.Infrastructure.Persistence;
 using MontageMonitor.Server.Infrastructure.Security;
@@ -95,6 +96,7 @@ public static class ScreenshotEndpoints
         HttpContext httpContext,
         MonitoringDbContext dbContext,
         IOptions<ScreenshotStorageOptions> storageOptions,
+        OperatorSessionService operatorSessions,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
@@ -149,6 +151,43 @@ public static class ScreenshotEndpoints
         if (validation is not null)
         {
             return Results.ValidationProblem(validation);
+        }
+
+        var agentId = httpContext.User.GetRequiredAgentId();
+        var computerId = httpContext.User.GetRequiredComputerId();
+        if (metadata.OperatorSessionId.HasValue)
+        {
+            var operatorSession = await operatorSessions.FindValidSessionAsync(
+                metadata.OperatorSessionId.Value,
+                agentId,
+                computerId,
+                metadata.TimestampUtc,
+                cancellationToken);
+            if (operatorSession is null || operatorSession.EmployeeId != metadata.EmployeeId)
+            {
+                return Results.Json(
+                    new { message = "Требуется выбрать монтажёра и подтвердить PIN-код." },
+                    statusCode: StatusCodes.Status428PreconditionRequired);
+            }
+        }
+        else if (metadata.EmployeeId != httpContext.User.GetRequiredEmployeeId())
+        {
+            return Results.Json(
+                new { message = "Сотрудник скриншота не соответствует старому device token." },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        if (!await dbContext.Employees.AsNoTracking().AnyAsync(
+                item => item.Id == metadata.EmployeeId && item.IsActive,
+                cancellationToken))
+        {
+            return metadata.OperatorSessionId.HasValue
+                ? Results.Json(
+                    new { message = "Требуется выбрать активного монтажёра и подтвердить PIN-код." },
+                    statusCode: StatusCodes.Status428PreconditionRequired)
+                : Results.Json(
+                    new { message = "Сотрудник старого device token деактивирован." },
+                    statusCode: StatusCodes.Status403Forbidden);
         }
 
         var screenshotEnabled = await dbContext.Employees.AsNoTracking()
@@ -276,7 +315,6 @@ public static class ScreenshotEndpoints
         }
 
         if (metadata.AgentId != httpContext.User.GetRequiredAgentId() ||
-            metadata.EmployeeId != httpContext.User.GetRequiredEmployeeId() ||
             metadata.ComputerId != httpContext.User.GetRequiredComputerId())
         {
             errors["device"] = ["Metadata скриншота не соответствует device token."];

@@ -16,6 +16,14 @@ internal sealed class AgentSettings
 
     public DateTimeOffset CredentialExpiresAtUtc { get; set; }
 
+    public Guid? OperatorSessionId { get; set; }
+
+    public Guid? SelectedEmployeeId { get; set; }
+
+    public string? SelectedEmployeeName { get; set; }
+
+    public DateTimeOffset? OperatorSessionExpiresAtUtc { get; set; }
+
     public long ConfigVersion { get; set; }
 
     public int HeartbeatIntervalSeconds { get; set; } = 30;
@@ -37,4 +45,9 @@ internal sealed class AgentSettings
         1_600,
         60,
         []);
+
+    public bool HasValidOperatorSession(DateTimeOffset nowUtc) =>
+        OperatorSessionId.HasValue &&
+        SelectedEmployeeId.HasValue &&
+        OperatorSessionExpiresAtUtc > nowUtc;
 }

@@ -11,6 +11,7 @@ public static class SecurityPolicies
     public const string ManageUsers = "users.manage";
     public const string LoginRateLimit = "auth.login";
     public const string EnrollmentRateLimit = "agent.enrollment";
+    public const string OperatorPinRateLimit = "agent.operator-pin";
     public const string ScreenshotUploadRateLimit = "agent.screenshot-upload";
 
     public static readonly string[] AllRoles =

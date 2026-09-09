@@ -21,14 +21,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _lastSyncItem;
     private readonly ToolStripMenuItem _queueItem;
     private readonly ToolStripMenuItem _machineStateItem;
+    private readonly ToolStripMenuItem _operatorItem;
     private readonly ToolStripMenuItem _startupItem;
+    private readonly ToolStripMenuItem _switchOperatorItem;
     private readonly ToolStripMenuItem _configureItem;
     private readonly NotifyIcon _notifyIcon;
     private readonly System.Windows.Forms.Timer _startupTimer;
+    private readonly System.Windows.Forms.Timer _operatorTimer;
     private SynchronizationContext? _uiContext;
     private AgentRuntime? _runtime;
     private AgentSettings? _settings;
     private bool _configurationDialogOpen;
+    private bool _operatorSelectionOpen;
 
     public TrayApplicationContext()
     {
@@ -36,9 +40,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _lastSyncItem = DisabledItem("Последняя синхронизация: —");
         _queueItem = DisabledItem("В очереди: 0");
         _machineStateItem = DisabledItem("Машинная работа: норма");
+        _operatorItem = DisabledItem("Монтажёр: не выбран");
         _startupItem = DisabledItem("Автозапуск: настройка…");
         _configureItem = new ToolStripMenuItem("Настроить подключение…");
         _configureItem.Click += async (_, _) => await ConfigureAsync();
+        _switchOperatorItem = new ToolStripMenuItem("Сменить монтажёра…");
+        _switchOperatorItem.Click += async (_, _) => await EnsureOperatorSelectionAsync(force: true);
 
         var exitItem = new ToolStripMenuItem("Выход");
         exitItem.Click += (_, _) => RequestExit();
@@ -49,8 +56,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _lastSyncItem,
             _queueItem,
             _machineStateItem,
+            _operatorItem,
             _startupItem,
             new ToolStripSeparator(),
+            _switchOperatorItem,
             _configureItem,
             new ToolStripSeparator(),
             exitItem,
@@ -67,13 +76,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             if (_runtime is null)
             {
-                await ConfigureAsync();
+                if (_settings is null)
+                {
+                    await ConfigureAsync();
+                }
+                else
+                {
+                    await EnsureOperatorSelectionAsync(force: true);
+                }
             }
         };
 
         _startupTimer = new System.Windows.Forms.Timer { Interval = 150 };
         _startupTimer.Tick += StartAsync;
         _startupTimer.Start();
+
+        _operatorTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
+        _operatorTimer.Tick += async (_, _) =>
+        {
+            if (_settings is not null && !_settings.HasValidOperatorSession(DateTimeOffset.UtcNow))
+            {
+                await EnsureOperatorSelectionAsync();
+            }
+        };
+        _operatorTimer.Start();
     }
 
     private static ToolStripMenuItem DisabledItem(string text) => new(text) { Enabled = false };
@@ -92,7 +118,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        StartRuntime(_settings);
+        if (_settings.HasValidOperatorSession(DateTimeOffset.UtcNow))
+        {
+            StartRuntime(_settings);
+        }
+        else
+        {
+            await EnsureOperatorSelectionAsync();
+        }
     }
 
     private async Task RegisterAutostartAsync()
@@ -158,7 +191,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             _settings = newSettings;
-            StartRuntime(newSettings);
+            await EnsureOperatorSelectionAsync();
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
@@ -177,10 +210,81 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void StartRuntime(AgentSettings settings)
+    private async Task EnsureOperatorSelectionAsync(bool force = false)
     {
+        if (_operatorSelectionOpen || _settings is null)
+        {
+            return;
+        }
+
+        if (!force && _settings.HasValidOperatorSession(DateTimeOffset.UtcNow))
+        {
+            if (_runtime is null)
+            {
+                StartRuntime(_settings);
+            }
+
+            return;
+        }
+
+        _operatorSelectionOpen = true;
+        _switchOperatorItem.Enabled = false;
+        await StopRuntimeAsync();
+        _settingsStore.ClearOperatorSession(_settings);
+        _operatorItem.Text = "Монтажёр: требуется выбор";
         try
         {
+            var deviceAccessToken = _settingsStore.GetDeviceAccessToken(_settings);
+            using var apiClient = new AgentApiClient(_settings, deviceAccessToken);
+            using var dialog = new OperatorSelectionDialog(apiClient, null);
+            _ = dialog.ShowDialog();
+            if (dialog.ExitRequested)
+            {
+                Environment.ExitCode = 0;
+                ExitThread();
+                return;
+            }
+
+            if (dialog.Session is null)
+            {
+                return;
+            }
+
+            _settingsStore.SaveOperatorSession(_settings, dialog.Session);
+            _operatorItem.Text = $"Монтажёр: {dialog.Session.EmployeeName}";
+            StartRuntime(_settings);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or
+            System.Security.Cryptography.CryptographicException or UriFormatException)
+        {
+            MessageBox.Show(
+                "Не удалось сохранить выбранного монтажёра. Обратитесь к администратору.",
+                "MontageMonitor",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _operatorSelectionOpen = false;
+            if (!_menu.IsDisposed)
+            {
+                _switchOperatorItem.Enabled = _settings is not null;
+            }
+        }
+    }
+
+    private void StartRuntime(AgentSettings settings)
+    {
+        if (!settings.HasValidOperatorSession(DateTimeOffset.UtcNow))
+        {
+            _ = EnsureOperatorSelectionAsync();
+            return;
+        }
+
+        try
+        {
+            _operatorItem.Text = $"Монтажёр: {settings.SelectedEmployeeName}";
             var deviceAccessToken = _settingsStore.GetDeviceAccessToken(settings);
             _runtime = new AgentRuntime(
                 settings,
@@ -213,7 +317,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     private void RuntimeStatusChanged(object? sender, AgentRuntimeStatus status) =>
-        PostToUi(() => ApplyStatus(status));
+        PostToUi(() =>
+        {
+            ApplyStatus(status);
+            if (status.State == AgentConnectionState.OperatorSelectionRequired)
+            {
+                _ = EnsureOperatorSelectionAsync();
+            }
+        });
 
     private void RuntimeFatalError(object? sender, Exception exception) =>
         PostToUi(() =>
@@ -230,6 +341,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             AgentConnectionState.Connected => "Статус: подключено",
             AgentConnectionState.Offline => "Статус: нет связи, данные сохранены",
             AgentConnectionState.EnrollmentRequired => "Статус: требуется повторная регистрация",
+            AgentConnectionState.OperatorSelectionRequired => "Статус: выберите монтажёра",
             _ => "Статус: неизвестно",
         };
         _lastSyncItem.Text = status.LastSyncAtUtc is null
@@ -248,6 +360,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             AgentConnectionState.Connected => "MontageMonitor — подключено",
             AgentConnectionState.Offline => "MontageMonitor — нет связи",
             AgentConnectionState.EnrollmentRequired => "MontageMonitor — требуется регистрация",
+            AgentConnectionState.OperatorSelectionRequired => "MontageMonitor — выберите монтажёра",
             _ => "MontageMonitor работает",
         };
     }
@@ -258,6 +371,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _lastSyncItem.Text = "Последняя синхронизация: —";
         _queueItem.Text = "В очереди: —";
         _machineStateItem.Text = "Машинная работа: —";
+        _operatorItem.Text = "Монтажёр: не выбран";
         _notifyIcon.Text = "MontageMonitor — требуется настройка";
     }
 
@@ -305,6 +419,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _startupTimer.Dispose();
+        _operatorTimer.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _menu.Dispose();

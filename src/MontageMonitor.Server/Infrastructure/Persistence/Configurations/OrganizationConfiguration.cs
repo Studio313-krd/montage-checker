@@ -22,6 +22,7 @@ public sealed class EmployeeConfiguration : IEntityTypeConfiguration<Employee>
         builder.Property(x => x.Login).HasMaxLength(100).IsRequired();
         builder.Property(x => x.NormalizedLogin).HasMaxLength(100).IsRequired();
         builder.Property(x => x.Department).HasMaxLength(200);
+        builder.Property(x => x.OperatorPinProtected).HasMaxLength(1_000);
         builder.Property(x => x.CreatedAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
         builder.Property(x => x.UpdatedAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
         builder.HasIndex(x => x.NormalizedLogin).IsUnique();
@@ -105,5 +106,35 @@ public sealed class AgentEnrollmentTokenConfiguration
             .OnDelete(DeleteBehavior.SetNull);
         builder.HasIndex(x => x.TokenHash).IsUnique();
         builder.HasIndex(x => new { x.EmployeeId, x.ExpiresAtUtc, x.UsedAtUtc });
+    }
+}
+
+public sealed class AgentOperatorSessionConfiguration
+    : IEntityTypeConfiguration<AgentOperatorSession>
+{
+    public void Configure(EntityTypeBuilder<AgentOperatorSession> builder)
+    {
+        builder.ToTable("agent_operator_sessions", table =>
+        {
+            table.HasCheckConstraint(
+                "ck_agent_operator_sessions_time",
+                "expires_at_utc > started_at_utc AND " +
+                "(ended_at_utc IS NULL OR ended_at_utc >= started_at_utc)");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.CreatedAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
+        builder.Property(x => x.UpdatedAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
+        builder.HasOne<AgentDevice>().WithMany().HasForeignKey(x => x.AgentId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<Computer>().WithMany().HasForeignKey(x => x.ComputerId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<Employee>().WithMany().HasForeignKey(x => x.EmployeeId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(x => new { x.AgentId, x.StartedAtUtc });
+        builder.HasIndex(x => new { x.ComputerId, x.StartedAtUtc });
+        builder.HasIndex(x => new { x.EmployeeId, x.StartedAtUtc });
+        builder.HasIndex(x => x.AgentId)
+            .HasFilter("ended_at_utc IS NULL")
+            .IsUnique();
     }
 }

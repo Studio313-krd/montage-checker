@@ -17,6 +17,8 @@ public sealed class Employee : Entity
     public int ScreenshotIntervalMinutes { get; set; } = 5;
 
     public int IdleThresholdSeconds { get; set; } = 300;
+
+    public string? OperatorPinProtected { get; set; }
 }
 
 public sealed class Computer : Entity
@@ -81,4 +83,19 @@ public sealed class AgentEnrollmentToken : Entity
     public Guid? CreatedByUserId { get; set; }
 
     public Guid? ConsumedByAgentId { get; set; }
+}
+
+public sealed class AgentOperatorSession : Entity
+{
+    public Guid AgentId { get; set; }
+
+    public Guid ComputerId { get; set; }
+
+    public Guid EmployeeId { get; set; }
+
+    public DateTimeOffset StartedAtUtc { get; set; }
+
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+
+    public DateTimeOffset? EndedAtUtc { get; set; }
 }

@@ -25,6 +25,15 @@ public static class AgentEndpoints
             .RequireAuthorization(AgentAuthenticationDefaults.Policy)
             .WithName("AgentHeartbeat")
             .WithSummary("Принять heartbeat от Agent");
+        group.MapGet("/operators", GetOperatorsAsync)
+            .RequireAuthorization(AgentAuthenticationDefaults.Policy)
+            .WithName("GetAgentOperators")
+            .WithSummary("Получить список монтажёров для выбора");
+        group.MapPost("/operator-session", StartOperatorSessionAsync)
+            .RequireAuthorization(AgentAuthenticationDefaults.Policy)
+            .RequireRateLimiting(SecurityPolicies.OperatorPinRateLimit)
+            .WithName("StartAgentOperatorSession")
+            .WithSummary("Подтвердить монтажёра PIN-кодом до следующего 06:00");
         group.MapGet("/config", GetConfigurationAsync)
             .RequireAuthorization(AgentAuthenticationDefaults.Policy)
             .WithName("GetAgentConfiguration")
@@ -162,11 +171,142 @@ public static class AgentEndpoints
             credential.Entity.ExpiresAtUtc!.Value));
     }
 
+    private static async Task<IResult> GetOperatorsAsync(
+        Guid? operatorSessionId,
+        HttpContext httpContext,
+        MonitoringDbContext dbContext,
+        OperatorSessionService operatorSessions,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var agentId = httpContext.User.GetRequiredAgentId();
+        var computerId = httpContext.User.GetRequiredComputerId();
+        var now = timeProvider.GetUtcNow();
+        AgentOperatorSessionResponse? current = null;
+        if (operatorSessionId.HasValue)
+        {
+            var session = await operatorSessions.FindValidSessionAsync(
+                operatorSessionId.Value,
+                agentId,
+                computerId,
+                now,
+                cancellationToken);
+            if (session is not null)
+            {
+                var employee = await dbContext.Employees.AsNoTracking()
+                    .SingleOrDefaultAsync(
+                        item => item.Id == session.EmployeeId && item.IsActive,
+                        cancellationToken);
+                if (employee is not null)
+                {
+                    current = new AgentOperatorSessionResponse(
+                        session.Id,
+                        employee.Id,
+                        employee.Name,
+                        session.StartedAtUtc,
+                        session.ExpiresAtUtc);
+                }
+            }
+        }
+
+        var employees = await dbContext.Employees.AsNoTracking()
+            .Where(item => item.IsActive)
+            .OrderBy(item => item.Name)
+            .Select(item => new AgentOperatorOption(item.Id, item.Name))
+            .ToListAsync(cancellationToken);
+        return Results.Ok(new AgentOperatorOptionsResponse(employees, current, now));
+    }
+
+    private static async Task<IResult> StartOperatorSessionAsync(
+        StartAgentOperatorSessionRequest request,
+        HttpContext httpContext,
+        MonitoringDbContext dbContext,
+        EmployeeOperatorPinService pinService,
+        OperatorSessionService operatorSessions,
+        ActivityAggregationService activityAggregator,
+        AuditWriter auditWriter,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        if (request.EmployeeId == Guid.Empty || string.IsNullOrEmpty(request.Pin) || request.Pin.Length != 4 ||
+            request.Pin.Any(character => character is < '0' or > '9'))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [nameof(request.Pin)] = ["Выберите сотрудника и введите PIN из четырёх цифр."],
+            });
+        }
+
+        var employee = await dbContext.Employees.SingleOrDefaultAsync(
+            item => item.Id == request.EmployeeId && item.IsActive,
+            cancellationToken);
+        if (employee is null || !pinService.Verify(employee.OperatorPinProtected, request.Pin))
+        {
+            return Results.Json(
+                new { message = "Неверный сотрудник или PIN-код." },
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var agentId = httpContext.User.GetRequiredAgentId();
+        var computerId = httpContext.User.GetRequiredComputerId();
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        var session = await strategy.ExecuteAsync(async () =>
+        {
+            dbContext.ChangeTracker.Clear();
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+            await activityAggregator.AcquireComputerLockAsync(computerId, cancellationToken);
+            var now = timeProvider.GetUtcNow();
+            var openSessions = await dbContext.AgentOperatorSessions
+                .Where(item => item.AgentId == agentId && item.EndedAtUtc == null)
+                .ToListAsync(cancellationToken);
+            foreach (var openSession in openSessions)
+            {
+                openSession.EndedAtUtc = openSession.ExpiresAtUtc < now
+                    ? openSession.ExpiresAtUtc
+                    : now;
+                openSession.UpdatedAtUtc = now;
+            }
+
+            if (openSessions.Count > 0)
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+            }
+
+            var createdSession = new AgentOperatorSession
+            {
+                AgentId = agentId,
+                ComputerId = computerId,
+                EmployeeId = employee.Id,
+                StartedAtUtc = now,
+                ExpiresAtUtc = operatorSessions.GetNextSelectionBoundaryUtc(now),
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+            };
+            dbContext.AgentOperatorSessions.Add(createdSession);
+            auditWriter.Add(
+                httpContext,
+                "agent.operator.selected",
+                "AgentOperatorSession",
+                createdSession.Id.ToString(),
+                details: new { agentId, computerId, employeeId = employee.Id, createdSession.ExpiresAtUtc });
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return createdSession;
+        });
+        return Results.Ok(new AgentOperatorSessionResponse(
+            session.Id,
+            employee.Id,
+            employee.Name,
+            session.StartedAtUtc,
+            session.ExpiresAtUtc));
+    }
+
     private static async Task<IResult> HeartbeatAsync(
         HeartbeatRequest request,
         HttpContext httpContext,
         MonitoringDbContext dbContext,
         ActivityAggregationService activityAggregator,
+        OperatorSessionService operatorSessions,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
@@ -177,14 +317,51 @@ public static class AgentEndpoints
         }
 
         var agentId = httpContext.User.GetRequiredAgentId();
-        var employeeId = httpContext.User.GetRequiredEmployeeId();
+        var legacyEmployeeId = httpContext.User.GetRequiredEmployeeId();
         var computerId = httpContext.User.GetRequiredComputerId();
-        if (request.AgentId != agentId || request.EmployeeId != employeeId || request.ComputerId != computerId)
+        if (request.AgentId != agentId || request.ComputerId != computerId)
         {
             return Results.Json(
                 new { message = "Идентификаторы heartbeat не соответствуют device token." },
                 statusCode: StatusCodes.Status403Forbidden);
         }
+
+        if (request.OperatorSessionId.HasValue)
+        {
+            var operatorSession = await operatorSessions.FindValidSessionAsync(
+                request.OperatorSessionId.Value,
+                agentId,
+                computerId,
+                request.TimestampUtc,
+                cancellationToken);
+            if (operatorSession is null || operatorSession.EmployeeId != request.EmployeeId)
+            {
+                return OperatorSelectionRequired();
+            }
+        }
+        else if (OperatorSessionService.RequiresOperatorSession(request.AgentVersion))
+        {
+            return OperatorSelectionRequired();
+        }
+        else if (request.EmployeeId != legacyEmployeeId)
+        {
+            return Results.Json(
+                new { message = "Сотрудник heartbeat не соответствует старому device token." },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        if (!await dbContext.Employees.AsNoTracking().AnyAsync(
+                item => item.Id == request.EmployeeId && item.IsActive,
+                cancellationToken))
+        {
+            return request.OperatorSessionId.HasValue
+                ? OperatorSelectionRequired()
+                : Results.Json(
+                    new { message = "Сотрудник старого device token деактивирован." },
+                    statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var employeeId = request.EmployeeId;
 
         var now = timeProvider.GetUtcNow();
         if (request.TimestampUtc > now.AddMinutes(5))
@@ -326,12 +503,31 @@ public static class AgentEndpoints
     }
 
     private static async Task<IResult> GetConfigurationAsync(
+        Guid? operatorSessionId,
         HttpContext httpContext,
         MonitoringDbContext dbContext,
+        OperatorSessionService operatorSessions,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
         var agentId = httpContext.User.GetRequiredAgentId();
         var employeeId = httpContext.User.GetRequiredEmployeeId();
+        var computerId = httpContext.User.GetRequiredComputerId();
+        if (operatorSessionId.HasValue)
+        {
+            var session = await operatorSessions.FindValidSessionAsync(
+                operatorSessionId.Value,
+                agentId,
+                computerId,
+                timeProvider.GetUtcNow(),
+                cancellationToken);
+            if (session is null)
+            {
+                return OperatorSelectionRequired();
+            }
+
+            employeeId = session.EmployeeId;
+        }
         var agent = await dbContext.Agents.AsNoTracking()
             .SingleAsync(item => item.Id == agentId, cancellationToken);
         var employee = await dbContext.Employees.AsNoTracking()
@@ -653,4 +849,8 @@ public static class AgentEndpoints
     private static IResult InvalidEnrollmentToken() => Results.Json(
         new { message = "Код регистрации недействителен, использован или истёк." },
         statusCode: StatusCodes.Status401Unauthorized);
+
+    private static IResult OperatorSelectionRequired() => Results.Json(
+        new { message = "Требуется выбрать монтажёра и подтвердить PIN-код." },
+        statusCode: StatusCodes.Status428PreconditionRequired);
 }
