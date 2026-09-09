@@ -65,9 +65,9 @@ export interface Employee {
   idleThresholdSeconds: number
 }
 
-export interface EmployeeOperatorPin {
+export interface EmployeeAgentPassword {
   employeeId: string
-  operatorPin: string
+  password: string
 }
 
 export interface AdminUser {
@@ -95,13 +95,6 @@ export interface ManagedComputer {
   agentId: string | null
   agentStatus: 'Online' | 'Offline' | 'Revoked' | null
   agentLastSeenAtUtc: string | null
-}
-
-export interface EnrollmentToken {
-  id: string
-  employeeId: string
-  enrollmentToken: string
-  expiresAtUtc: string
 }
 
 export interface ScreenshotSettings {

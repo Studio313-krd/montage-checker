@@ -252,7 +252,7 @@ internal sealed class AgentRuntime(
                     break;
                 case HeartbeatSendResult.Unauthorized:
                     Publish(
-                        AgentConnectionState.EnrollmentRequired,
+                        AgentConnectionState.AuthenticationRequired,
                         null,
                         await CountQueuedAsync(cancellationToken));
                     return;
@@ -296,7 +296,7 @@ internal sealed class AgentRuntime(
                     break;
                 case HeartbeatSendResult.Unauthorized:
                     Publish(
-                        AgentConnectionState.EnrollmentRequired,
+                        AgentConnectionState.AuthenticationRequired,
                         null,
                         await CountQueuedAsync(cancellationToken));
                     return;
@@ -386,6 +386,6 @@ internal enum AgentConnectionState
     Starting,
     Connected,
     Offline,
-    EnrollmentRequired,
+    AuthenticationRequired,
     OperatorSelectionRequired,
 }

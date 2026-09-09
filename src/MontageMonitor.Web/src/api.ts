@@ -4,9 +4,8 @@ import type {
   AuthSession,
   DashboardData,
   Employee,
-  EmployeeOperatorPin,
+  EmployeeAgentPassword,
   EmployeeInput,
-  EnrollmentToken,
   ManagedComputer,
   RenderReport,
   ReportQuery,
@@ -197,16 +196,12 @@ export function updateEmployee(id: string, input: EmployeeInput & { isActive: bo
   return sendJson<Employee>(`/api/employees/${id}`, 'PUT', input)
 }
 
-export function getEmployeeOperatorPins(signal?: AbortSignal): Promise<EmployeeOperatorPin[]> {
-  return getJson<EmployeeOperatorPin[]>('/api/admin/employees/operator-pins', signal)
+export function getEmployeeAgentPasswords(signal?: AbortSignal): Promise<EmployeeAgentPassword[]> {
+  return getJson<EmployeeAgentPassword[]>('/api/admin/employees/agent-passwords', signal)
 }
 
-export function regenerateEmployeeOperatorPin(employeeId: string): Promise<EmployeeOperatorPin> {
-  return sendJson<EmployeeOperatorPin>(`/api/admin/employees/${employeeId}/operator-pin/regenerate`, 'POST', {})
-}
-
-export function createEnrollmentToken(employeeId: string, expiresInHours = 24): Promise<EnrollmentToken> {
-  return sendJson<EnrollmentToken>(`/api/admin/employees/${employeeId}/agent-enrollment`, 'POST', { expiresInHours })
+export function regenerateEmployeeAgentPassword(employeeId: string): Promise<EmployeeAgentPassword> {
+  return sendJson<EmployeeAgentPassword>(`/api/admin/employees/${employeeId}/agent-password/regenerate`, 'POST', {})
 }
 
 export function getManagedComputers(signal?: AbortSignal): Promise<ManagedComputer[]> {

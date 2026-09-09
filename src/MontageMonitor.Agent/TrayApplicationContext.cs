@@ -42,7 +42,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _machineStateItem = DisabledItem("Машинная работа: норма");
         _operatorItem = DisabledItem("Монтажёр: не выбран");
         _startupItem = DisabledItem("Автозапуск: настройка…");
-        _configureItem = new ToolStripMenuItem("Настроить подключение…");
+        _configureItem = new ToolStripMenuItem("Войти заново…");
         _configureItem.Click += async (_, _) => await ConfigureAsync();
         _switchOperatorItem = new ToolStripMenuItem("Сменить монтажёра…");
         _switchOperatorItem.Click += async (_, _) => await EnsureOperatorSelectionAsync(force: true);
@@ -167,9 +167,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             var previousSettings = _settings;
             await StopRuntimeAsync();
-            using var dialog = new AgentSetupDialog(previousSettings?.ServerBaseUrl);
+            using var dialog = new AgentSetupDialog();
             if (dialog.ShowDialog() != DialogResult.OK ||
-                dialog.Enrollment is null || string.IsNullOrWhiteSpace(dialog.ServerBaseUrl))
+                dialog.LoginResult is null)
             {
                 if (previousSettings is not null)
                 {
@@ -183,7 +183,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 return;
             }
 
-            var newSettings = _settingsStore.SaveEnrollment(dialog.ServerBaseUrl, dialog.Enrollment);
+            var newSettings = _settingsStore.SaveLogin(dialog.LoginResult);
             if (previousSettings is not null &&
                 (previousSettings.AgentId != newSettings.AgentId ||
                  previousSettings.EmployeeId != newSettings.EmployeeId ||
@@ -198,7 +198,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             _settings = newSettings;
-            await EnsureOperatorSelectionAsync();
+            _operatorItem.Text = $"Монтажёр: {newSettings.SelectedEmployeeName}";
+            StartRuntime(newSettings);
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
@@ -239,27 +240,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
         await StopRuntimeAsync();
         _settingsStore.ClearOperatorSession(_settings);
         _operatorItem.Text = "Монтажёр: требуется выбор";
+        var authenticationRequired = false;
         try
         {
             var deviceAccessToken = _settingsStore.GetDeviceAccessToken(_settings);
-            using var apiClient = new AgentApiClient(_settings, deviceAccessToken);
-            using var dialog = new OperatorSelectionDialog(apiClient, null);
+            using var apiClient = new AgentApiClient(deviceAccessToken);
+            using var dialog = new OperatorSelectionDialog(apiClient);
             _ = dialog.ShowDialog();
-            if (dialog.ExitRequested)
+            if (dialog.AuthenticationRequired)
+            {
+                authenticationRequired = true;
+            }
+            else if (dialog.ExitRequested)
             {
                 Environment.ExitCode = 0;
                 ExitThread();
                 return;
             }
-
-            if (dialog.Session is null)
+            else if (dialog.Session is null)
             {
                 return;
             }
-
-            _settingsStore.SaveOperatorSession(_settings, dialog.Session);
-            _operatorItem.Text = $"Монтажёр: {dialog.Session.EmployeeName}";
-            StartRuntime(_settings);
+            else
+            {
+                _settingsStore.SaveOperatorSession(_settings, dialog.Session);
+                _operatorItem.Text = $"Монтажёр: {dialog.Session.EmployeeName}";
+                StartRuntime(_settings);
+            }
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException or
@@ -278,6 +285,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 _switchOperatorItem.Enabled = _settings is not null;
             }
+        }
+
+        if (authenticationRequired)
+        {
+            await ConfigureAsync();
         }
     }
 
@@ -309,7 +321,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 new WindowsScreenshotCapture(),
                 new SqliteHeartbeatQueue(),
                 new SqliteScreenshotQueue(),
-                new AgentApiClient(settings, deviceAccessToken));
+                new AgentApiClient(deviceAccessToken));
             _runtime.StatusChanged += RuntimeStatusChanged;
             _runtime.FatalError += RuntimeFatalError;
             _runtime.Start();
@@ -331,6 +343,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 _ = EnsureOperatorSelectionAsync();
             }
+            else if (status.State == AgentConnectionState.AuthenticationRequired)
+            {
+                _ = ConfigureAsync();
+            }
         });
 
     private void RuntimeFatalError(object? sender, Exception exception) =>
@@ -347,7 +363,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             AgentConnectionState.Starting => "Статус: запуск",
             AgentConnectionState.Connected => "Статус: подключено",
             AgentConnectionState.Offline => "Статус: нет связи, данные сохранены",
-            AgentConnectionState.EnrollmentRequired => "Статус: требуется повторная регистрация",
+            AgentConnectionState.AuthenticationRequired => "Статус: требуется повторный вход",
             AgentConnectionState.OperatorSelectionRequired => "Статус: выберите монтажёра",
             _ => "Статус: неизвестно",
         };
@@ -366,7 +382,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             AgentConnectionState.Connected => "MontageMonitor — подключено",
             AgentConnectionState.Offline => "MontageMonitor — нет связи",
-            AgentConnectionState.EnrollmentRequired => "MontageMonitor — требуется регистрация",
+            AgentConnectionState.AuthenticationRequired => "MontageMonitor — требуется вход",
             AgentConnectionState.OperatorSelectionRequired => "MontageMonitor — выберите монтажёра",
             _ => "MontageMonitor работает",
         };

@@ -39,7 +39,7 @@ public sealed class AgentCredentialService(TimeProvider timeProvider)
         }
     }
 
-    public static string Hash(string value) =>
+    private static string Hash(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 

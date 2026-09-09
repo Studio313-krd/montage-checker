@@ -118,17 +118,18 @@ try {
         screenshotIntervalMinutes = 1
         idleThresholdSeconds = 300
     } $adminHeaders
-    $enrollmentToken = Invoke-Json POST "/api/admin/employees/$($employee.id)/agent-enrollment" @{
-        expiresInHours = 1
-    } $adminHeaders
-    $enrollment = Invoke-Json POST "/api/agent/enroll" @{
-        enrollmentToken = $enrollmentToken.enrollmentToken
+    $password = [string](Invoke-Json GET "/api/admin/employees/agent-passwords" $null $adminHeaders |
+        Where-Object { $_.employeeId -eq $employee.id } |
+        Select-Object -ExpandProperty password)
+    $agentLogin = Invoke-Json POST "/api/agent/login" @{
+        login = $employee.login
+        password = $password
         machineName = "SMOKE-PC-$suffix"
         windowsUser = "smoke-user"
         operatingSystem = "Windows smoke"
         agentVersion = "0.8.0"
     }
-    $deviceHeaders = @{ Authorization = "Device $($enrollment.deviceAccessToken)" }
+    $deviceHeaders = @{ Authorization = "Device $($agentLogin.deviceAccessToken)" }
 
     $initialConfig = Invoke-Json GET "/api/agent/config" $null $deviceHeaders
     Assert-True ($initialConfig.screenshots.enabled -eq $true) "снимки должны быть включены"
@@ -159,9 +160,9 @@ try {
     $oldTimestamp = [DateTimeOffset]::UtcNow.AddDays(-40)
     $metadata = @{
         eventId = $screenshotEventId
-        agentId = $enrollment.agentId
-        employeeId = $enrollment.employeeId
-        computerId = $enrollment.computerId
+        agentId = $agentLogin.agentId
+        employeeId = $agentLogin.employeeId
+        computerId = $agentLogin.computerId
         timestampUtc = $oldTimestamp.ToString("O")
         screenIndex = 0
         width = 8
@@ -171,9 +172,9 @@ try {
         humanState = "Active"
         machineState = "Normal"
     }
-    $upload = Send-Screenshot $enrollment.deviceAccessToken $metadata $jpegBytes
+    $upload = Send-Screenshot $agentLogin.deviceAccessToken $metadata $jpegBytes
     Assert-True ($upload.StatusCode -eq 201) "первая загрузка должна вернуть 201, получено $($upload.StatusCode): $($upload.Content)"
-    $duplicateUpload = Send-Screenshot $enrollment.deviceAccessToken $metadata $jpegBytes
+    $duplicateUpload = Send-Screenshot $agentLogin.deviceAccessToken $metadata $jpegBytes
     Assert-True ($duplicateUpload.StatusCode -eq 200) "повторная загрузка должна быть идемпотентной"
 
     $fakeMetadata = $metadata.Clone()
@@ -181,22 +182,22 @@ try {
     $fakeMetadata.width = 1
     $fakeMetadata.height = 1
     [byte[]]$fakeBytes = 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
-    $fakeUpload = Send-Screenshot $enrollment.deviceAccessToken $fakeMetadata $fakeBytes
+    $fakeUpload = Send-Screenshot $agentLogin.deviceAccessToken $fakeMetadata $fakeBytes
     Assert-True ($fakeUpload.StatusCode -eq 415) "файл с поддельным типом должен быть отклонён"
 
     $lockedMetadata = $metadata.Clone()
     $lockedMetadata.eventId = [guid]::NewGuid()
     $lockedMetadata.humanState = "Locked"
-    $lockedUpload = Send-Screenshot $enrollment.deviceAccessToken $lockedMetadata $jpegBytes
+    $lockedUpload = Send-Screenshot $agentLogin.deviceAccessToken $lockedMetadata $jpegBytes
     Assert-True ($lockedUpload.StatusCode -eq 400) "снимок заблокированной сессии должен быть отклонён"
 
     $privacyEventId = [guid]::NewGuid()
     $heartbeatTimestamp = [DateTimeOffset]::UtcNow
     $heartbeat = Invoke-Json POST "/api/agent/heartbeat" @{
         eventId = [guid]::NewGuid()
-        agentId = $enrollment.agentId
-        employeeId = $enrollment.employeeId
-        computerId = $enrollment.computerId
+        agentId = $agentLogin.agentId
+        employeeId = $agentLogin.employeeId
+        computerId = $agentLogin.computerId
         agentVersion = "0.8.0"
         timestampUtc = $heartbeatTimestamp.ToString("O")
         windowsUser = "smoke-user"
@@ -251,7 +252,7 @@ try {
     $disabledMetadata = $metadata.Clone()
     $disabledMetadata.eventId = [guid]::NewGuid()
     $disabledMetadata.timestampUtc = [DateTimeOffset]::UtcNow.ToString("O")
-    $disabledUpload = Send-Screenshot $enrollment.deviceAccessToken $disabledMetadata $jpegBytes
+    $disabledUpload = Send-Screenshot $agentLogin.deviceAccessToken $disabledMetadata $jpegBytes
     Assert-True ($disabledUpload.StatusCode -eq 403) "сервер должен отклонить снимок отключённого сотрудника"
     $disabledConfig = Invoke-Json GET "/api/agent/config" $null $deviceHeaders
     Assert-True ($disabledConfig.screenshots.enabled -eq $false) "Agent не получил отключение снимков"
@@ -259,8 +260,8 @@ try {
     [pscustomobject]@{
         Result = "OK"
         EmployeeId = $employee.id
-        AgentId = $enrollment.agentId
-        ComputerId = $enrollment.computerId
+        AgentId = $agentLogin.agentId
+        ComputerId = $agentLogin.computerId
         ScreenshotEventId = $screenshotEventId
         PrivacyEventId = $privacyEventId
     }

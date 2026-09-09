@@ -4,7 +4,6 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MontageMonitor.Agent.Abstractions;
-using MontageMonitor.Agent.Configuration;
 using MontageMonitor.Shared.Contracts.Agent;
 
 namespace MontageMonitor.Agent.Networking;
@@ -18,7 +17,7 @@ internal sealed class AgentApiClient : IAgentApiClient
 
     private readonly HttpClient _httpClient;
 
-    public AgentApiClient(AgentSettings settings, string deviceAccessToken)
+    public AgentApiClient(string deviceAccessToken)
     {
         var handler = new HttpClientHandler
         {
@@ -26,7 +25,7 @@ internal sealed class AgentApiClient : IAgentApiClient
         };
         _httpClient = new HttpClient(handler)
         {
-            BaseAddress = new Uri(settings.ServerBaseUrl + "/", UriKind.Absolute),
+            BaseAddress = new Uri(AgentEnvironment.ServerBaseUrl + "/", UriKind.Absolute),
             Timeout = TimeSpan.FromSeconds(15),
         };
         _httpClient.DefaultRequestHeaders.Authorization =
@@ -88,47 +87,31 @@ internal sealed class AgentApiClient : IAgentApiClient
         }
     }
 
-    public async Task<AgentOperatorOptionsResponse?> GetOperatorOptionsAsync(
-        Guid? operatorSessionId,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var path = operatorSessionId.HasValue
-                ? $"api/agent/operators?operatorSessionId={operatorSessionId.Value:D}"
-                : "api/agent/operators";
-            using var response = await _httpClient.GetAsync(path, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            return await response.Content.ReadFromJsonAsync<AgentOperatorOptionsResponse>(
-                JsonOptions,
-                cancellationToken);
-        }
-        catch (Exception exception) when (
-            exception is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
-        {
-            return null;
-        }
-    }
-
     public async Task<AgentOperatorSessionResponse> StartOperatorSessionAsync(
-        Guid employeeId,
-        string pin,
+        string login,
+        string password,
         CancellationToken cancellationToken)
     {
         using var response = await _httpClient.PostAsJsonAsync(
             "api/agent/operator-session",
-            new StartAgentOperatorSessionRequest(employeeId, pin),
+            new StartAgentOperatorSessionRequest(login.Trim(), password),
             JsonOptions,
             cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (responseBody.Contains("device token", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new AgentAuthenticationRequiredException(
+                        "Подключение компьютера отозвано или истекло. Войдите заново.");
+                }
+            }
+
             var message = response.StatusCode switch
             {
-                HttpStatusCode.Unauthorized => "Неверный PIN-код.",
+                HttpStatusCode.Unauthorized => "Неверный логин или пароль.",
                 HttpStatusCode.TooManyRequests => "Слишком много попыток. Подождите одну минуту.",
                 _ => $"Сервер отклонил выбор монтажёра: HTTP {(int)response.StatusCode}.",
             };
@@ -191,9 +174,9 @@ internal sealed class AgentApiClient : IAgentApiClient
 
     public void Dispose() => _httpClient.Dispose();
 
-    public static async Task<AgentEnrollmentResponse> EnrollAsync(
-        Uri serverBaseUri,
-        string enrollmentToken,
+    public static async Task<AgentLoginResponse> LoginAsync(
+        string login,
+        string password,
         CancellationToken cancellationToken)
     {
         using var handler = new HttpClientHandler
@@ -202,34 +185,40 @@ internal sealed class AgentApiClient : IAgentApiClient
         };
         using var client = new HttpClient(handler)
         {
-            BaseAddress = serverBaseUri,
+            BaseAddress = new Uri(AgentEnvironment.ServerBaseUrl + "/", UriKind.Absolute),
             Timeout = TimeSpan.FromSeconds(20),
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd($"MontageMonitor.Agent/{AgentEnvironment.Version}");
-        var request = new AgentEnrollmentRequest(
-            enrollmentToken.Trim(),
+        var request = new AgentLoginRequest(
+            login.Trim(),
+            password,
             Environment.MachineName,
             AgentEnvironment.WindowsUser,
             System.Runtime.InteropServices.RuntimeInformation.OSDescription,
             AgentEnvironment.Version);
         using var response = await client.PostAsJsonAsync(
-            "api/agent/enroll",
+            "api/agent/login",
             request,
             JsonOptions,
             cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            var message = response.StatusCode == HttpStatusCode.Unauthorized
-                ? "Код регистрации недействителен, уже использован или истёк."
-                : $"Сервер отклонил регистрацию: HTTP {(int)response.StatusCode}.";
-            throw new AgentEnrollmentException(message);
+            var message = response.StatusCode switch
+            {
+                HttpStatusCode.Unauthorized => "Неверный логин или пароль.",
+                HttpStatusCode.TooManyRequests => "Слишком много попыток. Подождите одну минуту.",
+                _ => $"Сервер отклонил вход: HTTP {(int)response.StatusCode}.",
+            };
+            throw new AgentLoginException(message);
         }
 
-        return await response.Content.ReadFromJsonAsync<AgentEnrollmentResponse>(JsonOptions, cancellationToken)
-            ?? throw new AgentEnrollmentException("Сервер вернул пустой ответ регистрации.");
+        return await response.Content.ReadFromJsonAsync<AgentLoginResponse>(JsonOptions, cancellationToken)
+            ?? throw new AgentLoginException("Сервер вернул пустой ответ входа.");
     }
 }
 
-internal sealed class AgentEnrollmentException(string message) : Exception(message);
+internal sealed class AgentLoginException(string message) : Exception(message);
 
 internal sealed class OperatorSelectionException(string message) : Exception(message);
+
+internal sealed class AgentAuthenticationRequiredException(string message) : Exception(message);

@@ -45,33 +45,47 @@ public sealed class OperatorSelectionTests
     }
 
     [Fact]
-    public void Pin_IsFourDigitsAndCanBeProtectedAndVerified()
+    public void AgentPassword_IsFourDigitsAndCanBeProtectedAndVerified()
     {
         var directory = Directory.CreateDirectory(Path.Combine(
             Path.GetTempPath(),
-            "montage-monitor-pin-tests-" + Guid.NewGuid().ToString("N")));
+            "montage-monitor-password-tests-" + Guid.NewGuid().ToString("N")));
         try
         {
-            var service = new EmployeeOperatorPinService(DataProtectionProvider.Create(directory));
-            var pins = Enumerable.Range(0, 100).Select(_ => service.Generate()).ToList();
+            var service = new EmployeeAgentPasswordService(DataProtectionProvider.Create(directory));
+            var passwords = Enumerable.Range(0, 100).Select(_ => service.Generate()).ToList();
 
-            Assert.All(pins, pin =>
+            Assert.All(passwords, password =>
             {
-                Assert.Equal(4, pin.Length);
-                Assert.All(pin, character => Assert.True(char.IsAsciiDigit(character)));
+                Assert.Equal(4, password.Length);
+                Assert.All(password, character => Assert.True(char.IsAsciiDigit(character)));
             });
 
-            var pin = pins[0];
-            var protectedPin = service.Protect(pin);
-            Assert.NotEqual(pin, protectedPin);
-            Assert.Equal(pin, service.Reveal(protectedPin));
-            Assert.True(service.Verify(protectedPin, pin));
-            Assert.False(service.Verify(protectedPin, pin == "0000" ? "0001" : "0000"));
+            var password = passwords[0];
+            var protectedPassword = service.Protect(password);
+            Assert.NotEqual(password, protectedPassword);
+            Assert.Equal(password, service.Reveal(protectedPassword));
+            Assert.True(service.Verify(protectedPassword, password));
+            Assert.False(service.Verify(protectedPassword, password == "0000" ? "0001" : "0000"));
         }
         finally
         {
             directory.Delete(recursive: true);
         }
+    }
+
+    [Theory]
+    [InlineData("editor", "1234", true)]
+    [InlineData(" editor ", "0000", true)]
+    [InlineData("", "1234", false)]
+    [InlineData("editor", "123", false)]
+    [InlineData("editor", "12a4", false)]
+    public void AgentLoginInput_RequiresLoginAndFourDigitPassword(
+        string login,
+        string password,
+        bool expected)
+    {
+        Assert.Equal(expected, AgentLoginInput.IsValid(login, password));
     }
 
     private static MonitoringDbContext CreateDbContext()

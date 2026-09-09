@@ -166,7 +166,7 @@ public static class ScreenshotEndpoints
             if (operatorSession is null || operatorSession.EmployeeId != metadata.EmployeeId)
             {
                 return Results.Json(
-                    new { message = "Требуется выбрать монтажёра и подтвердить PIN-код." },
+                    new { message = "Требуется войти под логином и паролем монтажёра." },
                     statusCode: StatusCodes.Status428PreconditionRequired);
             }
         }
@@ -183,7 +183,7 @@ public static class ScreenshotEndpoints
         {
             return metadata.OperatorSessionId.HasValue
                 ? Results.Json(
-                    new { message = "Требуется выбрать активного монтажёра и подтвердить PIN-код." },
+                    new { message = "Требуется войти под логином и паролем активного монтажёра." },
                     statusCode: StatusCodes.Status428PreconditionRequired)
                 : Results.Json(
                     new { message = "Сотрудник старого device token деактивирован." },

@@ -29,4 +29,4 @@ public sealed record UpdateEmployeeRequest(
     int ScreenshotIntervalMinutes,
     int IdleThresholdSeconds);
 
-public sealed record EmployeeOperatorPinResponse(Guid EmployeeId, string OperatorPin);
+public sealed record EmployeeAgentPasswordResponse(Guid EmployeeId, string Password);

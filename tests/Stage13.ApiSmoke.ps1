@@ -88,7 +88,7 @@ function Get-HttpStatus {
     }
 }
 
-function New-EmployeeAndAgent {
+function New-EmployeeAndAgentLogin {
     param(
         [string]$Name,
         [string]$Suffix,
@@ -104,21 +104,26 @@ function New-EmployeeAndAgent {
         screenshotIntervalMinutes = 5
         idleThresholdSeconds = 300
     } $AdminHeaders
-    $token = Invoke-Json POST "/api/admin/employees/$($employee.id)/agent-enrollment" @{
-        expiresInHours = 1
-    } $AdminHeaders
-    $enrollmentRequest = @{
-        enrollmentToken = $token.enrollmentToken
+    $passwords = @(Invoke-Json GET "/api/admin/employees/agent-passwords" $null $AdminHeaders |
+        ForEach-Object { $_ })
+    $password = [string]($passwords |
+        Where-Object { $_.employeeId -eq $employee.id } |
+        Select-Object -ExpandProperty password)
+    Assert-True ($password -match '^\d{4}$') "админка не вернула четырёхзначный пароль Agent"
+    $loginRequest = @{
+        login = $employee.login
+        password = $password
         machineName = "TEST-PC-$($Suffix.ToUpperInvariant())"
         windowsUser = "test-user"
         operatingSystem = "Windows integration"
         agentVersion = $AgentVersion
     }
-    $enrollment = Invoke-Json POST "/api/agent/enroll" $enrollmentRequest
+    $agentLogin = Invoke-Json POST "/api/agent/login" $loginRequest
     [pscustomobject]@{
         Employee = $employee
-        Enrollment = $enrollment
-        EnrollmentRequest = $enrollmentRequest
+        Password = $password
+        AgentLogin = $agentLogin
+        LoginRequest = $loginRequest
     }
 }
 
@@ -128,35 +133,35 @@ $owner = Invoke-Json POST "/api/auth/login" @{
 }
 $adminHeaders = @{ Authorization = "Bearer $($owner.accessToken)" }
 $suffix = [guid]::NewGuid().ToString("N").Substring(0, 10)
-$first = New-EmployeeAndAgent "Монтажёр Integration 1" "a-$suffix" $adminHeaders
-$second = New-EmployeeAndAgent "Монтажёр Integration 2" "b-$suffix" $adminHeaders
-$legacy = New-EmployeeAndAgent "Монтажёр Legacy" "legacy-$suffix" $adminHeaders "0.8.0"
+$first = New-EmployeeAndAgentLogin "Монтажёр Integration 1" "a-$suffix" $adminHeaders
+$second = New-EmployeeAndAgentLogin "Монтажёр Integration 2" "b-$suffix" $adminHeaders
+$legacy = New-EmployeeAndAgentLogin "Монтажёр Legacy" "legacy-$suffix" $adminHeaders "0.8.0"
 
-$reusedTokenStatus = Get-HttpStatus POST "/api/agent/enroll" $first.EnrollmentRequest
-Assert-True ($reusedTokenStatus -eq 401) "одноразовый enrollment token должен отклоняться после использования"
+$wrongLoginRequest = $first.LoginRequest.Clone()
+$wrongLoginRequest.password = if ($first.Password -eq "0000") { "0001" } else { "0000" }
+$wrongAgentLoginStatus = Get-HttpStatus POST "/api/agent/login" $wrongLoginRequest
+Assert-True ($wrongAgentLoginStatus -eq 401) "неверный пароль Agent должен отклоняться"
+$removedEnrollmentStatus = Get-HttpStatus POST "/api/agent/enroll" @{}
+Assert-True ($removedEnrollmentStatus -ge 400) "старый endpoint enrollment должен быть удалён"
 
-$firstDeviceHeaders = @{ Authorization = "Device $($first.Enrollment.deviceAccessToken)" }
-$secondDeviceHeaders = @{ Authorization = "Device $($second.Enrollment.deviceAccessToken)" }
-$legacyDeviceHeaders = @{ Authorization = "Device $($legacy.Enrollment.deviceAccessToken)" }
+$firstDeviceHeaders = @{ Authorization = "Device $($first.AgentLogin.deviceAccessToken)" }
+$secondDeviceHeaders = @{ Authorization = "Device $($second.AgentLogin.deviceAccessToken)" }
+$legacyDeviceHeaders = @{ Authorization = "Device $($legacy.AgentLogin.deviceAccessToken)" }
 $operatorOptions = Invoke-Json GET "/api/agent/operators" $null $firstDeviceHeaders
 $operatorCount = @($operatorOptions.employees).Count
 Assert-True ($operatorCount -ge 3) "Agent не получил список активных сотрудников"
-
-$pins = @(Invoke-Json GET "/api/admin/employees/operator-pins" $null $adminHeaders |
-    ForEach-Object { $_ })
-$secondPinCandidates = @($pins |
-    Where-Object { $_.employeeId -eq $second.Employee.id } |
-    ForEach-Object { $_.operatorPin })
-Assert-True ($secondPinCandidates.Count -eq 1) "в списке PIN нет выбранного сотрудника"
-$secondPin = [string]$secondPinCandidates[0]
-Assert-True ($secondPin -match '^\d{4}$') "админка не вернула четырёхзначный PIN сотрудника"
+$legacyOperatorContract = Invoke-Json POST "/api/agent/operator-session" @{
+    employeeId = $first.Employee.id
+    pin = $first.Password
+} $firstDeviceHeaders
+Assert-True ($legacyOperatorContract.employeeId -eq $first.Employee.id) "Agent 0.9.1 не смог подтвердить старый формат выбора"
 
 $eventId = [guid]::NewGuid()
 $heartbeat = @{
     eventId = $eventId
-    agentId = $first.Enrollment.agentId
-    employeeId = $second.Enrollment.employeeId
-    computerId = $first.Enrollment.computerId
+    agentId = $first.AgentLogin.agentId
+    employeeId = $second.AgentLogin.employeeId
+    computerId = $first.AgentLogin.computerId
     agentVersion = "0.9.0"
     timestampUtc = [DateTimeOffset]::UtcNow.ToString("O")
     windowsUser = "test-user"
@@ -172,20 +177,20 @@ $heartbeat = @{
 }
 $missingOperatorStatus = Get-HttpStatus POST "/api/agent/heartbeat" $heartbeat $firstDeviceHeaders
 Assert-True ($missingOperatorStatus -eq 428) "новый Agent без выбора монтажёра должен получить 428"
-$invalidPinStatus = Get-HttpStatus POST "/api/agent/operator-session" @{
-    employeeId = $second.Employee.id
-    pin = "99999"
+$invalidPasswordStatus = Get-HttpStatus POST "/api/agent/operator-session" @{
+    login = $second.Employee.login
+    password = "99999"
 } $firstDeviceHeaders
-Assert-True ($invalidPinStatus -eq 400) "PIN неверного формата должен быть отклонён"
-$wrongPin = if ($secondPin -eq "0000") { "0001" } else { "0000" }
-$wrongPinStatus = Get-HttpStatus POST "/api/agent/operator-session" @{
-    employeeId = $second.Employee.id
-    pin = $wrongPin
+Assert-True ($invalidPasswordStatus -eq 400) "пароль неверного формата должен быть отклонён"
+$wrongPassword = if ($second.Password -eq "0000") { "0001" } else { "0000" }
+$wrongPasswordStatus = Get-HttpStatus POST "/api/agent/operator-session" @{
+    login = $second.Employee.login
+    password = $wrongPassword
 } $firstDeviceHeaders
-Assert-True ($wrongPinStatus -eq 401) "неверный PIN должен быть отклонён"
+Assert-True ($wrongPasswordStatus -eq 401) "неверный пароль должен быть отклонён"
 $firstOperatorSession = Invoke-Json POST "/api/agent/operator-session" @{
-    employeeId = $second.Employee.id
-    pin = $secondPin
+    login = $second.Employee.login
+    password = $second.Password
 } $firstDeviceHeaders
 Assert-True ($firstOperatorSession.employeeId -eq $second.Employee.id) "общий ПК не переключился на выбранного сотрудника"
 $heartbeat.operatorSessionId = $firstOperatorSession.sessionId
@@ -196,23 +201,19 @@ Assert-True ($accepted.eventId -eq $eventId) "первый heartbeat не при
 Assert-True ($duplicate.eventId -eq $eventId) "идемпотентный повтор heartbeat не принят"
 
 $secondHeartbeat = $heartbeat.Clone()
-$secondHeartbeat.agentId = $second.Enrollment.agentId
-$secondHeartbeat.employeeId = $second.Enrollment.employeeId
-$secondHeartbeat.computerId = $second.Enrollment.computerId
-$secondOperatorSession = Invoke-Json POST "/api/agent/operator-session" @{
-    employeeId = $second.Employee.id
-    pin = $secondPin
-} $secondDeviceHeaders
-$secondHeartbeat.operatorSessionId = $secondOperatorSession.sessionId
+$secondHeartbeat.agentId = $second.AgentLogin.agentId
+$secondHeartbeat.employeeId = $second.AgentLogin.employeeId
+$secondHeartbeat.computerId = $second.AgentLogin.computerId
+$secondHeartbeat.operatorSessionId = $second.AgentLogin.operatorSession.sessionId
 $secondHeartbeat.timestampUtc = [DateTimeOffset]::UtcNow.ToString("O")
 $foreignDuplicateStatus = Get-HttpStatus POST "/api/agent/heartbeat" $secondHeartbeat $secondDeviceHeaders
 Assert-True ($foreignDuplicateStatus -eq 409) "UUID другого устройства должен вернуть conflict"
 
 $legacyHeartbeat = $heartbeat.Clone()
 $legacyHeartbeat.eventId = [guid]::NewGuid()
-$legacyHeartbeat.agentId = $legacy.Enrollment.agentId
-$legacyHeartbeat.employeeId = $legacy.Enrollment.employeeId
-$legacyHeartbeat.computerId = $legacy.Enrollment.computerId
+$legacyHeartbeat.agentId = $legacy.AgentLogin.agentId
+$legacyHeartbeat.employeeId = $legacy.AgentLogin.employeeId
+$legacyHeartbeat.computerId = $legacy.AgentLogin.computerId
 $legacyHeartbeat.agentVersion = "0.8.0"
 $legacyHeartbeat.machineName = "TEST-PC-LEGACY-$($suffix.ToUpperInvariant())"
 $legacyHeartbeat.timestampUtc = [DateTimeOffset]::UtcNow.ToString("O")
@@ -257,11 +258,13 @@ Assert-True ($excelStatus -eq 403) "VIEWER не должен скачивать 
 
 [pscustomobject]@{
     Result = "OK"
-    EnrollmentReuseStatus = $reusedTokenStatus
+    WrongAgentLoginStatus = $wrongAgentLoginStatus
+    RemovedEnrollmentStatus = $removedEnrollmentStatus
+    LegacyOperatorContract = "accepted"
     HeartbeatRows = [int]$heartbeatCount.Trim()
     ForeignDuplicateStatus = $foreignDuplicateStatus
     MissingOperatorStatus = $missingOperatorStatus
-    WrongPinStatus = $wrongPinStatus
+    WrongPasswordStatus = $wrongPasswordStatus
     LegacyAgentStatus = "accepted"
     ViewerEmployeeCount = $visibleEmployees.Count
     ViewerManageStatus = $manageStatus

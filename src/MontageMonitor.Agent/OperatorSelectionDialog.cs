@@ -11,23 +11,22 @@ internal sealed class OperatorSelectionDialog : Form
     private static readonly Color Canvas = Color.FromArgb(242, 243, 245);
     private static readonly Color Amber = Color.FromArgb(244, 185, 66);
     private static readonly Color Slate = Color.FromArgb(80, 89, 103);
+    private static readonly Color DisabledButton = Color.FromArgb(213, 217, 223);
     private static readonly Color Error = Color.FromArgb(185, 68, 68);
 
     private readonly IAgentApiClient _apiClient;
-    private readonly Guid? _currentSessionId;
-    private readonly ComboBox _employeeComboBox;
-    private readonly TextBox _pinTextBox;
+    private readonly TextBox _loginTextBox;
+    private readonly TextBox _passwordTextBox;
     private readonly Button _confirmButton;
     private readonly Button _notEditorButton;
-    private readonly Button _retryButton;
     private readonly Label _statusLabel;
     private readonly CancellationTokenSource _cancellation = new();
     private bool _allowClose;
+    private bool _busy;
 
-    public OperatorSelectionDialog(IAgentApiClient apiClient, Guid? currentSessionId)
+    public OperatorSelectionDialog(IAgentApiClient apiClient)
     {
         _apiClient = apiClient;
-        _currentSessionId = currentSessionId;
         Text = "Кто сегодня работает? — MontageMonitor";
         Icon = AppBranding.Icon;
         WindowState = FormWindowState.Maximized;
@@ -104,60 +103,56 @@ internal sealed class OperatorSelectionDialog : Form
         }, 0, 1);
         layout.Controls.Add(new Label
         {
-            Text = "Выбор обязателен каждый день после 06:00. Данные будут записаны на выбранного монтажёра.",
+            Text = "Вход обязателен каждый день после 06:00. Данные будут записаны на вошедшего монтажёра.",
             ForeColor = Slate,
             Font = new Font("Segoe UI", 10.5f),
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.TopCenter,
         }, 0, 2);
-        layout.Controls.Add(FieldLabel("Монтажёр"), 0, 3);
-        _employeeComboBox = new ComboBox
+
+        layout.Controls.Add(FieldLabel("Логин"), 0, 3);
+        _loginTextBox = new TextBox
         {
             Dock = DockStyle.Fill,
-            DropDownStyle = ComboBoxStyle.DropDownList,
             Font = new Font("Segoe UI", 14f),
-            Enabled = false,
-            IntegralHeight = false,
-            DropDownHeight = 280,
+            MaxLength = 100,
         };
-        layout.Controls.Add(_employeeComboBox, 0, 4);
-        layout.Controls.Add(FieldLabel("PIN-код из 4 цифр"), 0, 6);
-        _pinTextBox = new TextBox
+        _loginTextBox.TextChanged += (_, _) => UpdateConfirmButton();
+        layout.Controls.Add(_loginTextBox, 0, 4);
+
+        layout.Controls.Add(FieldLabel("Пароль из 4 цифр"), 0, 6);
+        _passwordTextBox = new TextBox
         {
             Dock = DockStyle.Fill,
             Font = new Font("Consolas", 22f, FontStyle.Bold),
             MaxLength = 4,
             TextAlign = HorizontalAlignment.Center,
             UseSystemPasswordChar = true,
-            Enabled = false,
         };
-        _pinTextBox.KeyPress += (_, eventArgs) =>
+        _passwordTextBox.KeyPress += (_, eventArgs) =>
         {
-            if (!char.IsControl(eventArgs.KeyChar) && !char.IsDigit(eventArgs.KeyChar))
+            if (!char.IsControl(eventArgs.KeyChar) && !char.IsAsciiDigit(eventArgs.KeyChar))
             {
                 eventArgs.Handled = true;
             }
         };
-        layout.Controls.Add(_pinTextBox, 0, 7);
+        _passwordTextBox.TextChanged += (_, _) => UpdateConfirmButton();
+        layout.Controls.Add(_passwordTextBox, 0, 7);
 
         _confirmButton = new Button
         {
-            Text = "НАЧАТЬ СМЕНУ",
+            Text = "ВОЙТИ И НАЧАТЬ СМЕНУ",
             Dock = DockStyle.Fill,
-            BackColor = Graphite,
-            ForeColor = Color.White,
+            BackColor = DisabledButton,
+            ForeColor = Slate,
             FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold),
             Enabled = false,
-            Cursor = Cursors.Hand,
+            UseVisualStyleBackColor = false,
             Margin = new Padding(0, 12, 0, 0),
         };
         _confirmButton.FlatAppearance.BorderSize = 0;
         _confirmButton.Click += ConfirmAsync;
-        _employeeComboBox.SelectedIndexChanged += (_, _) =>
-            _confirmButton.Enabled = _employeeComboBox.SelectedItem is OperatorItem && _pinTextBox.Text.Length == 4;
-        _pinTextBox.TextChanged += (_, _) =>
-            _confirmButton.Enabled = _employeeComboBox.SelectedItem is OperatorItem && _pinTextBox.Text.Length == 4;
         layout.Controls.Add(_confirmButton, 0, 8);
 
         _notEditorButton = new Button
@@ -175,37 +170,17 @@ internal sealed class OperatorSelectionDialog : Form
         _notEditorButton.Click += (_, _) => CloseAsNonEditor();
         layout.Controls.Add(_notEditorButton, 0, 9);
 
-        var footer = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            Padding = new Padding(0, 12, 0, 0),
-        };
         _statusLabel = new Label
         {
-            Text = "Загружаем список сотрудников…",
+            Text = "Введите свой логин и выданный администратором пароль.",
             ForeColor = Slate,
-            Width = 560,
-            Height = 42,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 14, 0, 0),
             TextAlign = ContentAlignment.TopCenter,
         };
-        _retryButton = new Button
-        {
-            Text = "Повторить подключение",
-            AutoSize = true,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = Graphite,
-            Visible = false,
-            Cursor = Cursors.Hand,
-            Anchor = AnchorStyles.None,
-        };
-        _retryButton.Click += LoadEmployeesAsync;
-        footer.Controls.Add(_statusLabel);
-        footer.Controls.Add(_retryButton);
-        layout.Controls.Add(footer, 0, 10);
+        layout.Controls.Add(_statusLabel, 0, 10);
 
-        Shown += LoadEmployeesAsync;
+        Shown += (_, _) => _loginTextBox.Focus();
         FormClosing += PreventClosing;
         KeyDown += (_, eventArgs) =>
         {
@@ -222,6 +197,8 @@ internal sealed class OperatorSelectionDialog : Form
 
     public bool ExitRequested { get; private set; }
 
+    public bool AuthenticationRequired { get; private set; }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -233,67 +210,21 @@ internal sealed class OperatorSelectionDialog : Form
         base.Dispose(disposing);
     }
 
-    private async void LoadEmployeesAsync(object? sender, EventArgs eventArgs)
-    {
-        SetBusy(true);
-        _retryButton.Visible = false;
-        SetStatus("Загружаем список сотрудников…", Slate);
-        try
-        {
-            var response = await _apiClient.GetOperatorOptionsAsync(
-                _currentSessionId,
-                _cancellation.Token);
-            if (response is null)
-            {
-                SetLoadError("Сервер недоступен. Проверьте интернет и повторите подключение.");
-                return;
-            }
-
-            _employeeComboBox.Items.Clear();
-            foreach (var employee in response.Employees)
-            {
-                _employeeComboBox.Items.Add(new OperatorItem(employee.EmployeeId, employee.Name));
-            }
-
-            if (_employeeComboBox.Items.Count == 0)
-            {
-                SetLoadError("В системе нет активных сотрудников. Обратитесь к администратору.");
-                return;
-            }
-
-            _employeeComboBox.SelectedIndex = 0;
-            _employeeComboBox.Enabled = true;
-            _pinTextBox.Enabled = true;
-            _pinTextBox.Focus();
-            SetStatus("Выберите своё имя и введите выданный администратором PIN.", Slate);
-        }
-        catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
-        {
-        }
-        finally
-        {
-            if (!IsDisposed)
-            {
-                SetBusy(false);
-            }
-        }
-    }
-
     private async void ConfirmAsync(object? sender, EventArgs eventArgs)
     {
-        if (_employeeComboBox.SelectedItem is not OperatorItem employee || _pinTextBox.Text.Length != 4)
+        if (!AgentLoginInput.IsValid(_loginTextBox.Text, _passwordTextBox.Text))
         {
-            SetStatus("Выберите сотрудника и введите четыре цифры PIN-кода.", Error);
+            SetStatus("Введите логин и пароль из четырёх цифр.", Error);
             return;
         }
 
         SetBusy(true);
-        SetStatus("Проверяем PIN-код…", Slate);
+        SetStatus("Проверяем логин и пароль…", Slate);
         try
         {
             Session = await _apiClient.StartOperatorSessionAsync(
-                employee.Id,
-                _pinTextBox.Text,
+                _loginTextBox.Text,
+                _passwordTextBox.Text,
                 _cancellation.Token);
             _allowClose = true;
             DialogResult = DialogResult.OK;
@@ -301,9 +232,16 @@ internal sealed class OperatorSelectionDialog : Form
         }
         catch (OperatorSelectionException exception)
         {
-            _pinTextBox.Clear();
+            _passwordTextBox.Clear();
             SetStatus(exception.Message, Error);
-            _pinTextBox.Focus();
+            _passwordTextBox.Focus();
+        }
+        catch (AgentAuthenticationRequiredException)
+        {
+            AuthenticationRequired = true;
+            _allowClose = true;
+            DialogResult = DialogResult.Retry;
+            Close();
         }
         catch (HttpRequestException)
         {
@@ -340,22 +278,21 @@ internal sealed class OperatorSelectionDialog : Form
 
     private void SetBusy(bool busy)
     {
-        var hasEmployees = _employeeComboBox.Items.Count > 0;
-        _employeeComboBox.Enabled = !busy && hasEmployees;
-        _pinTextBox.Enabled = !busy && hasEmployees;
-        _confirmButton.Enabled = !busy && hasEmployees && _pinTextBox.Text.Length == 4;
-        _retryButton.Enabled = !busy;
-        _notEditorButton.Enabled = true;
+        _busy = busy;
+        _loginTextBox.Enabled = !busy;
+        _passwordTextBox.Enabled = !busy;
+        _notEditorButton.Enabled = !busy;
         UseWaitCursor = busy;
+        UpdateConfirmButton();
     }
 
-    private void SetLoadError(string message)
+    private void UpdateConfirmButton()
     {
-        _employeeComboBox.Enabled = false;
-        _pinTextBox.Enabled = false;
-        _confirmButton.Enabled = false;
-        _retryButton.Visible = true;
-        SetStatus(message, Error);
+        var enabled = !_busy && AgentLoginInput.IsValid(_loginTextBox.Text, _passwordTextBox.Text);
+        _confirmButton.Enabled = enabled;
+        _confirmButton.BackColor = enabled ? Amber : DisabledButton;
+        _confirmButton.ForeColor = enabled ? Graphite : Slate;
+        _confirmButton.Cursor = enabled ? Cursors.Hand : Cursors.Default;
     }
 
     private void SetStatus(string message, Color color)
@@ -372,9 +309,4 @@ internal sealed class OperatorSelectionDialog : Form
         Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
         TextAlign = ContentAlignment.BottomLeft,
     };
-
-    private sealed record OperatorItem(Guid Id, string Name)
-    {
-        public override string ToString() => Name;
-    }
 }

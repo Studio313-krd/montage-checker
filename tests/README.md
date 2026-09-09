@@ -1,6 +1,6 @@
 # Tests
 
-Этап 13 завершён. Набор из 52 unit-тестов покрывает activity session aggregation, смену оператора на одном ПК, устранение пересечений человека на трёх ПК, ежедневную границу 06:00, формат/защиту PIN, обратную совместимость версий Agent, Offline gaps, idle threshold/lock priority, Render/Proxy state machines, screenshot policy, проверку JPEG, dashboard, timezone conversion, Excel aggregation/workbook и permissions. SQLite integration-тест открывает очередь повторно, имитируя восстановление Agent после offline/restart, и проверяет UUID-дедупликацию и удаление подтверждённого события.
+Этап 13 завершён. Набор из 57 unit-тестов покрывает activity session aggregation, смену оператора на одном ПК, устранение пересечений человека на трёх ПК, ежедневную границу 06:00, формат/защиту четырёхзначного пароля Agent, валидацию окна входа, обратную совместимость версий Agent, Offline gaps, idle threshold/lock priority, Render/Proxy state machines, screenshot policy, проверку JPEG, dashboard, timezone conversion, Excel aggregation/workbook и permissions. SQLite integration-тест открывает очередь повторно, имитируя восстановление Agent после offline/restart, и проверяет UUID-дедупликацию и удаление подтверждённого события.
 
 Полная проверка одной командой:
 
@@ -16,7 +16,7 @@
 .\tests\Stage13.Integration.ps1
 ```
 
-Runner выбирает свободный loopback-порт, создаёт уникальный Compose project, поднимает настоящие PostgreSQL и Server, применяет все migrations и проверяет одноразовый enrollment token, выдачу четырёхзначного PIN, обязательный выбор монтажёра, неверный PIN, привязку общего ПК к другому сотруднику, совместимость Agent `0.8.0`, heartbeat upload, повтор/конфликт UUID, область VIEWER и реальный Excel download. При ошибке перед очисткой выводятся логи Server; в `finally` удаляются только созданные этим запуском контейнеры, volumes, networks и test image. Production Compose не изменяется.
+Runner выбирает свободный loopback-порт, создаёт уникальный Compose project, поднимает настоящие PostgreSQL и Server, применяет все migrations и проверяет вход Agent по логину и четырёхзначному паролю, удаление старого enrollment endpoint, обязательную operator session, неверный пароль, привязку общего ПК к другому сотруднику, совместимость Agent `0.8.0`, heartbeat upload, повтор/конфликт UUID, область VIEWER и реальный Excel download. При ошибке перед очисткой выводятся логи Server; в `finally` удаляются только созданные этим запуском контейнеры, volumes, networks и test image. Production Compose не изменяется.
 
 Smoke-тест Этапа 8 запускается против временного Compose-стенда:
 

@@ -54,7 +54,7 @@ public static class SecurityExtensions
         services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
         services.AddScoped<TokenService>();
         services.AddScoped<AgentCredentialService>();
-        services.AddScoped<EmployeeOperatorPinService>();
+        services.AddScoped<EmployeeAgentPasswordService>();
         services.AddScoped<AuditWriter>();
         services.AddScoped<EmployeeAccessService>();
 
@@ -159,17 +159,17 @@ public static class SecurityExtensions
                         QueueLimit = 0,
                         Window = TimeSpan.FromMinutes(1),
                     }));
-            options.AddPolicy(SecurityPolicies.EnrollmentRateLimit, httpContext =>
+            options.AddPolicy(SecurityPolicies.AgentLoginRateLimit, httpContext =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                     _ => new FixedWindowRateLimiterOptions
                     {
                         AutoReplenishment = true,
-                        PermitLimit = 10,
+                        PermitLimit = 5,
                         QueueLimit = 0,
-                        Window = TimeSpan.FromHours(1),
+                        Window = TimeSpan.FromMinutes(1),
                     }));
-            options.AddPolicy(SecurityPolicies.OperatorPinRateLimit, httpContext =>
+            options.AddPolicy(SecurityPolicies.OperatorPasswordRateLimit, httpContext =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                     _ => new FixedWindowRateLimiterOptions

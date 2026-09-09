@@ -10,19 +10,21 @@ internal sealed class AgentSetupDialog : Form
     private static readonly Color Slate = Color.FromArgb(80, 89, 103);
     private static readonly Color Canvas = Color.FromArgb(242, 243, 245);
     private static readonly Color Amber = Color.FromArgb(244, 185, 66);
+    private static readonly Color DisabledButton = Color.FromArgb(213, 217, 223);
     private static readonly Color Success = Color.FromArgb(47, 125, 97);
     private static readonly Color Error = Color.FromArgb(185, 68, 68);
 
-    private readonly TextBox _serverTextBox;
-    private readonly TextBox _tokenTextBox;
-    private readonly Button _connectButton;
+    private readonly TextBox _loginTextBox;
+    private readonly TextBox _passwordTextBox;
+    private readonly Button _loginButton;
     private readonly Button _closeButton;
     private readonly Label _statusLabel;
     private readonly CancellationTokenSource _cancellation = new();
+    private bool _busy;
 
-    public AgentSetupDialog(string? currentServerUrl = null)
+    public AgentSetupDialog()
     {
-        Text = "Настройка MontageMonitor";
+        Text = "Вход в MontageMonitor";
         Icon = AppBranding.Icon;
         ClientSize = new Size(570, 440);
         MinimumSize = new Size(570, 440);
@@ -49,9 +51,7 @@ internal sealed class AgentSetupDialog : Form
         rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 126));
         rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(rootLayout);
-
-        var header = CreateHeader();
-        rootLayout.Controls.Add(header, 0, 0);
+        rootLayout.Controls.Add(CreateHeader(), 0, 0);
 
         var content = new Panel
         {
@@ -77,19 +77,24 @@ internal sealed class AgentSetupDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         content.Controls.Add(layout);
 
-        layout.Controls.Add(CreateFieldLabel("Адрес сервера"), 0, 0);
-        _serverTextBox = CreateTextBox();
-        _serverTextBox.Text = currentServerUrl ?? "https://monitor.company.ru";
-        layout.Controls.Add(_serverTextBox, 0, 1);
+        layout.Controls.Add(CreateFieldLabel("Логин сотрудника"), 0, 0);
+        _loginTextBox = CreateTextBox();
+        _loginTextBox.MaxLength = 100;
+        _loginTextBox.TextChanged += (_, _) => UpdateLoginButton();
+        layout.Controls.Add(_loginTextBox, 0, 1);
 
-        layout.Controls.Add(CreateFieldLabel("Одноразовый код регистрации"), 0, 3);
-        _tokenTextBox = CreateTextBox();
-        _tokenTextBox.UseSystemPasswordChar = true;
-        layout.Controls.Add(_tokenTextBox, 0, 4);
+        layout.Controls.Add(CreateFieldLabel("Пароль из 4 цифр"), 0, 3);
+        _passwordTextBox = CreateTextBox();
+        _passwordTextBox.MaxLength = 4;
+        _passwordTextBox.UseSystemPasswordChar = true;
+        _passwordTextBox.TextAlign = HorizontalAlignment.Center;
+        _passwordTextBox.KeyPress += AllowDigitsOnly;
+        _passwordTextBox.TextChanged += (_, _) => UpdateLoginButton();
+        layout.Controls.Add(_passwordTextBox, 0, 4);
 
         _statusLabel = new Label
         {
-            Text = "Код выдаёт администратор для конкретного сотрудника.",
+            Text = "Адрес сервера настроен автоматически. Логин и пароль выдаёт администратор.",
             Dock = DockStyle.Fill,
             ForeColor = Slate,
             TextAlign = ContentAlignment.MiddleLeft,
@@ -104,18 +109,20 @@ internal sealed class AgentSetupDialog : Form
             WrapContents = false,
             Padding = new Padding(0),
         };
-        _connectButton = new Button
+        _loginButton = new Button
         {
-            Text = "Подключить Agent",
+            Text = "ВОЙТИ И ПОДКЛЮЧИТЬ",
             AutoSize = false,
-            Size = new Size(158, 38),
-            BackColor = Graphite,
-            ForeColor = Color.White,
+            Size = new Size(205, 38),
+            BackColor = DisabledButton,
+            ForeColor = Slate,
             FlatStyle = FlatStyle.Flat,
-            Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+            Enabled = false,
+            UseVisualStyleBackColor = false,
         };
-        _connectButton.FlatAppearance.BorderSize = 0;
-        _connectButton.Click += ConnectAsync;
+        _loginButton.FlatAppearance.BorderSize = 0;
+        _loginButton.Click += LoginAsync;
         _closeButton = new Button
         {
             Text = "Закрыть",
@@ -128,17 +135,16 @@ internal sealed class AgentSetupDialog : Form
         };
         _closeButton.FlatAppearance.BorderColor = Color.FromArgb(195, 199, 205);
         _closeButton.Click += (_, _) => Close();
-        buttons.Controls.Add(_connectButton);
+        buttons.Controls.Add(_loginButton);
         buttons.Controls.Add(_closeButton);
         layout.Controls.Add(buttons, 0, 7);
 
-        AcceptButton = _connectButton;
+        Shown += (_, _) => _loginTextBox.Focus();
+        AcceptButton = _loginButton;
         CancelButton = _closeButton;
     }
 
-    public AgentEnrollmentResponse? Enrollment { get; private set; }
-
-    public string? ServerBaseUrl { get; private set; }
+    public AgentLoginResponse? LoginResult { get; private set; }
 
     protected override void OnFormClosed(FormClosedEventArgs eventArgs)
     {
@@ -147,40 +153,35 @@ internal sealed class AgentSetupDialog : Form
         base.OnFormClosed(eventArgs);
     }
 
-    private async void ConnectAsync(object? sender, EventArgs eventArgs)
+    private async void LoginAsync(object? sender, EventArgs eventArgs)
     {
-        if (!TryNormalizeServerUrl(_serverTextBox.Text, out var serverUri, out var error))
+        if (!AgentLoginInput.IsValid(_loginTextBox.Text, _passwordTextBox.Text))
         {
-            SetStatus(error, Error);
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(_tokenTextBox.Text))
-        {
-            SetStatus("Введите одноразовый код регистрации.", Error);
+            SetStatus("Введите логин и пароль из четырёх цифр.", Error);
             return;
         }
 
         SetBusy(true);
-        SetStatus("Проверяем сервер и регистрируем компьютер…", Slate);
+        SetStatus("Проверяем данные и подключаем компьютер…", Slate);
         try
         {
-            Enrollment = await AgentApiClient.EnrollAsync(
-                serverUri,
-                _tokenTextBox.Text,
+            LoginResult = await AgentApiClient.LoginAsync(
+                _loginTextBox.Text,
+                _passwordTextBox.Text,
                 _cancellation.Token);
-            ServerBaseUrl = serverUri.GetLeftPart(UriPartial.Path).TrimEnd('/');
-            SetStatus("Компьютер подключён. Теперь выберите монтажёра.", Success);
+            SetStatus("Компьютер подключён. Мониторинг запущен.", Success);
             DialogResult = DialogResult.OK;
             Close();
         }
-        catch (AgentEnrollmentException exception)
+        catch (AgentLoginException exception)
         {
+            _passwordTextBox.Clear();
             SetStatus(exception.Message, Error);
+            _passwordTextBox.Focus();
         }
         catch (HttpRequestException)
         {
-            SetStatus("Сервер недоступен. Проверьте адрес и подключение к интернету.", Error);
+            SetStatus("Сервер недоступен. Проверьте подключение к интернету.", Error);
         }
         catch (TaskCanceledException) when (!_cancellation.IsCancellationRequested)
         {
@@ -195,41 +196,37 @@ internal sealed class AgentSetupDialog : Form
         }
     }
 
-    private static bool TryNormalizeServerUrl(string value, out Uri serverUri, out string error)
-    {
-        error = string.Empty;
-        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var parsed) ||
-            parsed.Scheme is not ("https" or "http"))
-        {
-            serverUri = null!;
-            error = "Укажите полный адрес, например https://monitor.company.ru";
-            return false;
-        }
-
-        if (parsed.Scheme != Uri.UriSchemeHttps && !parsed.IsLoopback)
-        {
-            serverUri = null!;
-            error = "Для удалённого сервера обязательно используется HTTPS.";
-            return false;
-        }
-
-        serverUri = new Uri(parsed.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/");
-        return true;
-    }
-
     private void SetBusy(bool busy)
     {
-        _connectButton.Enabled = !busy;
+        _busy = busy;
         _closeButton.Enabled = !busy;
-        _serverTextBox.Enabled = !busy;
-        _tokenTextBox.Enabled = !busy;
+        _loginTextBox.Enabled = !busy;
+        _passwordTextBox.Enabled = !busy;
         UseWaitCursor = busy;
+        UpdateLoginButton();
+    }
+
+    private void UpdateLoginButton()
+    {
+        var enabled = !_busy && AgentLoginInput.IsValid(_loginTextBox.Text, _passwordTextBox.Text);
+        _loginButton.Enabled = enabled;
+        _loginButton.BackColor = enabled ? Amber : DisabledButton;
+        _loginButton.ForeColor = enabled ? Graphite : Slate;
+        _loginButton.Cursor = enabled ? Cursors.Hand : Cursors.Default;
     }
 
     private void SetStatus(string message, Color color)
     {
         _statusLabel.Text = message;
         _statusLabel.ForeColor = color;
+    }
+
+    private static void AllowDigitsOnly(object? sender, KeyPressEventArgs eventArgs)
+    {
+        if (!char.IsControl(eventArgs.KeyChar) && !char.IsAsciiDigit(eventArgs.KeyChar))
+        {
+            eventArgs.Handled = true;
+        }
     }
 
     private static Panel CreateHeader()
@@ -240,26 +237,24 @@ internal sealed class AgentSetupDialog : Form
             BackColor = Graphite,
             Padding = new Padding(34, 22, 34, 18),
         };
-        var title = new Label
+        panel.Controls.Add(new Label
         {
             Text = "MONTAGE / MONITOR",
             ForeColor = Color.White,
             Font = new Font("Segoe UI Semibold", 18f, FontStyle.Bold),
             AutoSize = true,
             Location = new Point(30, 18),
-        };
-        var subtitle = new Label
+        });
+        panel.Controls.Add(new Label
         {
-            Text = "Подключение рабочего компьютера",
+            Text = "Вход на рабочем компьютере",
             ForeColor = Color.FromArgb(188, 195, 204),
             Font = new Font("Segoe UI", 9.5f),
             AutoSize = true,
             Location = new Point(33, 52),
-        };
-        panel.Controls.Add(title);
-        panel.Controls.Add(subtitle);
+        });
 
-        var labels = new[] { "СЕРВЕР", "КОД", "ГОТОВО" };
+        var labels = new[] { "ЛОГИН", "ПАРОЛЬ", "ГОТОВО" };
         for (var index = 0; index < labels.Length; index++)
         {
             var x = 34 + index * 118;
@@ -307,4 +302,13 @@ internal sealed class AgentSetupDialog : Form
         BorderStyle = BorderStyle.FixedSingle,
         Margin = new Padding(0),
     };
+}
+
+internal static class AgentLoginInput
+{
+    public static bool IsValid(string? login, string? password) =>
+        !string.IsNullOrWhiteSpace(login) &&
+        login.Trim().Length <= 100 &&
+        password is { Length: 4 } &&
+        password.All(char.IsAsciiDigit);
 }

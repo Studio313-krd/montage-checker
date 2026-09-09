@@ -16,11 +16,11 @@ public static class AgentEndpoints
         var group = endpoints.MapGroup("/api/agent")
             .WithTags("Windows Agent");
 
-        group.MapPost("/enroll", EnrollAsync)
+        group.MapPost("/login", LoginAsync)
             .AllowAnonymous()
-            .RequireRateLimiting(SecurityPolicies.EnrollmentRateLimit)
-            .WithName("EnrollAgent")
-            .WithSummary("Зарегистрировать Windows Agent одноразовым кодом");
+            .RequireRateLimiting(SecurityPolicies.AgentLoginRateLimit)
+            .WithName("LoginAgent")
+            .WithSummary("Подключить Windows Agent по логину и паролю сотрудника");
         group.MapPost("/heartbeat", HeartbeatAsync)
             .RequireAuthorization(AgentAuthenticationDefaults.Policy)
             .WithName("AgentHeartbeat")
@@ -31,9 +31,9 @@ public static class AgentEndpoints
             .WithSummary("Получить список монтажёров для выбора");
         group.MapPost("/operator-session", StartOperatorSessionAsync)
             .RequireAuthorization(AgentAuthenticationDefaults.Policy)
-            .RequireRateLimiting(SecurityPolicies.OperatorPinRateLimit)
+            .RequireRateLimiting(SecurityPolicies.OperatorPasswordRateLimit)
             .WithName("StartAgentOperatorSession")
-            .WithSummary("Подтвердить монтажёра PIN-кодом до следующего 06:00");
+            .WithSummary("Подтвердить монтажёра логином и паролем до следующего 06:00");
         group.MapGet("/config", GetConfigurationAsync)
             .RequireAuthorization(AgentAuthenticationDefaults.Policy)
             .WithName("GetAgentConfiguration")
@@ -42,133 +42,164 @@ public static class AgentEndpoints
         return endpoints;
     }
 
-    private static async Task<IResult> EnrollAsync(
-        AgentEnrollmentRequest request,
+    private static async Task<IResult> LoginAsync(
+        AgentLoginRequest request,
         HttpContext httpContext,
         MonitoringDbContext dbContext,
         AgentCredentialService credentialService,
+        EmployeeAgentPasswordService passwordService,
+        OperatorSessionService operatorSessions,
+        ActivityAggregationService activityAggregator,
         AuditWriter auditWriter,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        var validation = ValidateEnrollment(request);
+        var validation = ValidateLogin(request);
         if (validation is not null)
         {
             return Results.ValidationProblem(validation);
         }
 
-        var tokenHash = AgentCredentialService.Hash(request.EnrollmentToken.Trim());
-        var enrollmentToken = await dbContext.AgentEnrollmentTokens
-            .SingleOrDefaultAsync(item => item.TokenHash == tokenHash, cancellationToken);
-        var now = timeProvider.GetUtcNow();
-        if (enrollmentToken is null || enrollmentToken.UsedAtUtc is not null ||
-            enrollmentToken.ExpiresAtUtc <= now)
-        {
-            return InvalidEnrollmentToken();
-        }
-
-        var employee = await dbContext.Employees.SingleOrDefaultAsync(
-            item => item.Id == enrollmentToken.EmployeeId,
-            cancellationToken);
-        if (employee is null || !employee.IsActive)
-        {
-            return InvalidEnrollmentToken();
-        }
-
+        var normalizedLogin = request.Login.Trim().ToUpperInvariant();
         var normalizedMachineName = request.MachineName.Trim().ToUpperInvariant();
-        var computer = await dbContext.Computers.SingleOrDefaultAsync(
-            item => item.EmployeeId == employee.Id && item.NormalizedName == normalizedMachineName,
-            cancellationToken);
-        if (computer is null)
+        var strategy = dbContext.Database.CreateExecutionStrategy();
+        var response = await strategy.ExecuteAsync(async () =>
         {
-            computer = new Computer
-            {
-                EmployeeId = employee.Id,
-                Name = request.MachineName.Trim(),
-                NormalizedName = normalizedMachineName,
-                OperatingSystem = request.OperatingSystem.Trim(),
-                AgentVersion = request.AgentVersion.Trim(),
-                LastIpAddress = httpContext.Connection.RemoteIpAddress?.ToString(),
-                LastOnlineAtUtc = now,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now,
-            };
-            dbContext.Computers.Add(computer);
-        }
-        else
-        {
-            computer.Name = request.MachineName.Trim();
-            computer.OperatingSystem = request.OperatingSystem.Trim();
-            computer.AgentVersion = request.AgentVersion.Trim();
-            computer.LastIpAddress = httpContext.Connection.RemoteIpAddress?.ToString();
-            computer.LastOnlineAtUtc = now;
-            computer.IsRevoked = false;
-            computer.UpdatedAtUtc = now;
-        }
+            dbContext.ChangeTracker.Clear();
+            await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+            await dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtext({normalizedMachineName}))",
+                cancellationToken);
 
-        var agent = await dbContext.Agents.SingleOrDefaultAsync(
-            item => item.ComputerId == computer.Id,
-            cancellationToken);
-        if (agent is null)
-        {
-            agent = new AgentDevice
+            var employee = await dbContext.Employees.SingleOrDefaultAsync(
+                item => item.NormalizedLogin == normalizedLogin && item.IsActive,
+                cancellationToken);
+            if (employee is null ||
+                !passwordService.Verify(employee.OperatorPinProtected, request.Password))
             {
-                ComputerId = computer.Id,
-                Status = AgentStatus.Online,
-                InstalledVersion = request.AgentVersion.Trim(),
-                EnrolledAtUtc = now,
-                LastSeenAtUtc = now,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now,
-            };
-            dbContext.Agents.Add(agent);
-        }
-        else
-        {
-            agent.Status = AgentStatus.Online;
-            agent.InstalledVersion = request.AgentVersion.Trim();
-            agent.EnrolledAtUtc = now;
-            agent.LastSeenAtUtc = now;
-            agent.RevokedAtUtc = null;
-            agent.UpdatedAtUtc = now;
-
-            var oldCredentials = await dbContext.AgentCredentials
-                .Where(item => item.AgentId == agent.Id && item.RevokedAtUtc == null)
-                .ToListAsync(cancellationToken);
-            foreach (var oldCredential in oldCredentials)
-            {
-                oldCredential.RevokedAtUtc = now;
-                oldCredential.UpdatedAtUtc = now;
+                await transaction.RollbackAsync(cancellationToken);
+                return null;
             }
-        }
 
-        var credential = credentialService.Create(agent.Id);
-        dbContext.AgentCredentials.Add(credential.Entity);
-        enrollmentToken.UsedAtUtc = now;
-        enrollmentToken.ConsumedByAgentId = agent.Id;
-        enrollmentToken.UpdatedAtUtc = now;
-        auditWriter.Add(
-            httpContext,
-            "agent.enrolled",
-            "Agent",
-            agent.Id.ToString(),
-            details: new { employeeId = employee.Id, computerId = computer.Id, computer.Name });
+            var now = timeProvider.GetUtcNow();
+            var computer = await dbContext.Computers
+                .OrderBy(item => item.CreatedAtUtc)
+                .FirstOrDefaultAsync(
+                    item => item.NormalizedName == normalizedMachineName,
+                    cancellationToken);
+            if (computer is null)
+            {
+                computer = new Computer
+                {
+                    EmployeeId = employee.Id,
+                    Name = request.MachineName.Trim(),
+                    NormalizedName = normalizedMachineName,
+                    OperatingSystem = request.OperatingSystem.Trim(),
+                    AgentVersion = request.AgentVersion.Trim(),
+                    LastIpAddress = httpContext.Connection.RemoteIpAddress?.ToString(),
+                    LastOnlineAtUtc = now,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now,
+                };
+                dbContext.Computers.Add(computer);
+            }
+            else
+            {
+                computer.EmployeeId = employee.Id;
+                computer.Name = request.MachineName.Trim();
+                computer.OperatingSystem = request.OperatingSystem.Trim();
+                computer.AgentVersion = request.AgentVersion.Trim();
+                computer.LastIpAddress = httpContext.Connection.RemoteIpAddress?.ToString();
+                computer.LastOnlineAtUtc = now;
+                computer.IsRevoked = false;
+                computer.UpdatedAtUtc = now;
+            }
 
-        try
-        {
+            var agent = await dbContext.Agents.SingleOrDefaultAsync(
+                item => item.ComputerId == computer.Id,
+                cancellationToken);
+            if (agent is null)
+            {
+                agent = new AgentDevice
+                {
+                    ComputerId = computer.Id,
+                    Status = AgentStatus.Online,
+                    InstalledVersion = request.AgentVersion.Trim(),
+                    EnrolledAtUtc = now,
+                    LastSeenAtUtc = now,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now,
+                };
+                dbContext.Agents.Add(agent);
+            }
+            else
+            {
+                agent.Status = AgentStatus.Online;
+                agent.InstalledVersion = request.AgentVersion.Trim();
+                agent.EnrolledAtUtc = now;
+                agent.LastSeenAtUtc = now;
+                agent.RevokedAtUtc = null;
+                agent.UpdatedAtUtc = now;
+
+                var oldCredentials = await dbContext.AgentCredentials
+                    .Where(item => item.AgentId == agent.Id && item.RevokedAtUtc == null)
+                    .ToListAsync(cancellationToken);
+                foreach (var oldCredential in oldCredentials)
+                {
+                    oldCredential.RevokedAtUtc = now;
+                    oldCredential.UpdatedAtUtc = now;
+                }
+            }
+
+            await activityAggregator.AcquireComputerLockAsync(computer.Id, cancellationToken);
+            var openSessions = await dbContext.AgentOperatorSessions
+                .Where(item => item.AgentId == agent.Id && item.EndedAtUtc == null)
+                .ToListAsync(cancellationToken);
+            foreach (var openSession in openSessions)
+            {
+                openSession.EndedAtUtc = openSession.ExpiresAtUtc < now
+                    ? openSession.ExpiresAtUtc
+                    : now;
+                openSession.UpdatedAtUtc = now;
+            }
+
+            var session = new AgentOperatorSession
+            {
+                AgentId = agent.Id,
+                ComputerId = computer.Id,
+                EmployeeId = employee.Id,
+                StartedAtUtc = now,
+                ExpiresAtUtc = operatorSessions.GetNextSelectionBoundaryUtc(now),
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+            };
+            dbContext.AgentOperatorSessions.Add(session);
+            var credential = credentialService.Create(agent.Id);
+            dbContext.AgentCredentials.Add(credential.Entity);
+            auditWriter.Add(
+                httpContext,
+                "agent.logged_in",
+                "Agent",
+                agent.Id.ToString(),
+                details: new { employeeId = employee.Id, computerId = computer.Id, computer.Name });
             await dbContext.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            return InvalidEnrollmentToken();
-        }
+            await transaction.CommitAsync(cancellationToken);
 
-        return Results.Ok(new AgentEnrollmentResponse(
-            agent.Id,
-            employee.Id,
-            computer.Id,
-            credential.AccessToken,
-            credential.Entity.ExpiresAtUtc!.Value));
+            return new AgentLoginResponse(
+                agent.Id,
+                employee.Id,
+                computer.Id,
+                credential.AccessToken,
+                credential.Entity.ExpiresAtUtc!.Value,
+                new AgentOperatorSessionResponse(
+                    session.Id,
+                    employee.Id,
+                    employee.Name,
+                    session.StartedAtUtc,
+                    session.ExpiresAtUtc));
+        });
+
+        return response is null ? InvalidLogin() : Results.Ok(response);
     }
 
     private static async Task<IResult> GetOperatorsAsync(
@@ -221,29 +252,37 @@ public static class AgentEndpoints
         StartAgentOperatorSessionRequest request,
         HttpContext httpContext,
         MonitoringDbContext dbContext,
-        EmployeeOperatorPinService pinService,
+        EmployeeAgentPasswordService passwordService,
         OperatorSessionService operatorSessions,
         ActivityAggregationService activityAggregator,
         AuditWriter auditWriter,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        if (request.EmployeeId == Guid.Empty || string.IsNullOrEmpty(request.Pin) || request.Pin.Length != 4 ||
-            request.Pin.Any(character => character is < '0' or > '9'))
+        var usesLogin = !string.IsNullOrWhiteSpace(request.Login);
+        var password = usesLogin ? request.Password : request.Pin;
+        if ((usesLogin && request.Login!.Trim().Length > 100) ||
+            (!usesLogin && (!request.EmployeeId.HasValue || request.EmployeeId == Guid.Empty)) ||
+            !IsFourDigitPassword(password))
         {
             return Results.ValidationProblem(new Dictionary<string, string[]>
             {
-                [nameof(request.Pin)] = ["Выберите сотрудника и введите PIN из четырёх цифр."],
+                [nameof(request.Password)] = ["Введите логин и пароль из четырёх цифр."],
             });
         }
 
-        var employee = await dbContext.Employees.SingleOrDefaultAsync(
-            item => item.Id == request.EmployeeId && item.IsActive,
-            cancellationToken);
-        if (employee is null || !pinService.Verify(employee.OperatorPinProtected, request.Pin))
+        var normalizedLogin = usesLogin ? request.Login!.Trim().ToUpperInvariant() : null;
+        var employee = usesLogin
+            ? await dbContext.Employees.SingleOrDefaultAsync(
+                item => item.NormalizedLogin == normalizedLogin && item.IsActive,
+                cancellationToken)
+            : await dbContext.Employees.SingleOrDefaultAsync(
+                item => item.Id == request.EmployeeId && item.IsActive,
+                cancellationToken);
+        if (employee is null || !passwordService.Verify(employee.OperatorPinProtected, password!))
         {
             return Results.Json(
-                new { message = "Неверный сотрудник или PIN-код." },
+                new { message = "Неверный логин или пароль." },
                 statusCode: StatusCodes.Status401Unauthorized);
         }
 
@@ -666,10 +705,15 @@ public static class AgentEndpoints
             screenshotConfiguration));
     }
 
-    private static Dictionary<string, string[]>? ValidateEnrollment(AgentEnrollmentRequest request)
+    private static Dictionary<string, string[]>? ValidateLogin(AgentLoginRequest request)
     {
         var errors = new Dictionary<string, string[]>();
-        ValidateRequired(request.EnrollmentToken, 512, nameof(request.EnrollmentToken), "Код регистрации", errors);
+        ValidateRequired(request.Login, 100, nameof(request.Login), "Логин", errors);
+        if (!IsFourDigitPassword(request.Password))
+        {
+            errors[nameof(request.Password)] = ["Пароль должен состоять из четырёх цифр."];
+        }
+
         ValidateRequired(request.MachineName, 255, nameof(request.MachineName), "Имя компьютера", errors);
         ValidateRequired(request.WindowsUser, 255, nameof(request.WindowsUser), "Пользователь Windows", errors);
         ValidateRequired(request.OperatingSystem, 255, nameof(request.OperatingSystem), "Версия Windows", errors);
@@ -846,11 +890,14 @@ public static class AgentEndpoints
         }
     }
 
-    private static IResult InvalidEnrollmentToken() => Results.Json(
-        new { message = "Код регистрации недействителен, использован или истёк." },
+    private static bool IsFourDigitPassword(string? value) =>
+        value is { Length: 4 } && value.All(char.IsAsciiDigit);
+
+    private static IResult InvalidLogin() => Results.Json(
+        new { message = "Неверный логин или пароль." },
         statusCode: StatusCodes.Status401Unauthorized);
 
     private static IResult OperatorSelectionRequired() => Results.Json(
-        new { message = "Требуется выбрать монтажёра и подтвердить PIN-код." },
+        new { message = "Требуется войти под логином и паролем монтажёра." },
         statusCode: StatusCodes.Status428PreconditionRequired);
 }

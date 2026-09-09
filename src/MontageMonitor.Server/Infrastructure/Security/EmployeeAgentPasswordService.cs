@@ -8,26 +8,27 @@ using MontageMonitor.Server.Infrastructure.Persistence;
 
 namespace MontageMonitor.Server.Infrastructure.Security;
 
-public sealed class EmployeeOperatorPinService(IDataProtectionProvider dataProtectionProvider)
+public sealed class EmployeeAgentPasswordService(IDataProtectionProvider dataProtectionProvider)
 {
+    // Keep the original purpose string so production passwords remain decryptable after the rename.
     private readonly IDataProtector _protector = dataProtectionProvider.CreateProtector(
         "MontageMonitor.EmployeeOperatorPin.v1");
 
     public string Generate() => RandomNumberGenerator.GetInt32(10_000)
         .ToString("D4", CultureInfo.InvariantCulture);
 
-    public string Protect(string pin) => _protector.Protect(pin);
+    public string Protect(string password) => _protector.Protect(password);
 
-    public string? Reveal(string? protectedPin)
+    public string? Reveal(string? protectedPassword)
     {
-        if (string.IsNullOrWhiteSpace(protectedPin))
+        if (string.IsNullOrWhiteSpace(protectedPassword))
         {
             return null;
         }
 
         try
         {
-            return _protector.Unprotect(protectedPin);
+            return _protector.Unprotect(protectedPassword);
         }
         catch (CryptographicException)
         {
@@ -35,9 +36,9 @@ public sealed class EmployeeOperatorPinService(IDataProtectionProvider dataProte
         }
     }
 
-    public bool Verify(string? protectedPin, string suppliedPin)
+    public bool Verify(string? protectedPassword, string suppliedPassword)
     {
-        var expected = Reveal(protectedPin);
+        var expected = Reveal(protectedPassword);
         if (expected is null)
         {
             return false;
@@ -45,19 +46,19 @@ public sealed class EmployeeOperatorPinService(IDataProtectionProvider dataProte
 
         return CryptographicOperations.FixedTimeEquals(
             Encoding.UTF8.GetBytes(expected),
-            Encoding.UTF8.GetBytes(suppliedPin));
+            Encoding.UTF8.GetBytes(suppliedPassword));
     }
 }
 
-public static class EmployeeOperatorPinProvisioningExtensions
+public static class EmployeeAgentPasswordProvisioningExtensions
 {
-    public static async Task ProvisionEmployeeOperatorPinsAsync(
+    public static async Task ProvisionEmployeeAgentPasswordsAsync(
         this WebApplication app,
         CancellationToken cancellationToken = default)
     {
         await using var scope = app.Services.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<MonitoringDbContext>();
-        var pinService = scope.ServiceProvider.GetRequiredService<EmployeeOperatorPinService>();
+        var passwordService = scope.ServiceProvider.GetRequiredService<EmployeeAgentPasswordService>();
         var employees = await dbContext.Employees
             .Where(item => item.OperatorPinProtected == null)
             .ToListAsync(cancellationToken);
@@ -69,7 +70,7 @@ public static class EmployeeOperatorPinProvisioningExtensions
         var now = DateTimeOffset.UtcNow;
         foreach (var employee in employees)
         {
-            employee.OperatorPinProtected = pinService.Protect(pinService.Generate());
+            employee.OperatorPinProtected = passwordService.Protect(passwordService.Generate());
             employee.UpdatedAtUtc = now;
         }
 

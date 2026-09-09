@@ -70,21 +70,6 @@ public sealed class AgentCredential : Entity
     public DateTimeOffset? RevokedAtUtc { get; set; }
 }
 
-public sealed class AgentEnrollmentToken : Entity
-{
-    public Guid EmployeeId { get; set; }
-
-    public required string TokenHash { get; set; }
-
-    public DateTimeOffset ExpiresAtUtc { get; set; }
-
-    public DateTimeOffset? UsedAtUtc { get; set; }
-
-    public Guid? CreatedByUserId { get; set; }
-
-    public Guid? ConsumedByAgentId { get; set; }
-}
-
 public sealed class AgentOperatorSession : Entity
 {
     public Guid AgentId { get; set; }

@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using MontageMonitor.Server.Domain;
 using MontageMonitor.Server.Infrastructure.Persistence;
@@ -15,9 +13,6 @@ public static class AgentAdminEndpoints
             .RequireAuthorization(SecurityPolicies.ManageEmployees)
             .WithTags("Администрирование агентов");
 
-        group.MapPost("/employees/{employeeId:guid}/agent-enrollment", CreateEnrollmentTokenAsync)
-            .WithName("CreateAgentEnrollmentToken")
-            .WithSummary("Создать одноразовый код регистрации Agent");
         group.MapGet("/computers", GetComputersAsync)
             .WithName("GetComputers")
             .WithSummary("Получить список компьютеров и статусы Agent");
@@ -26,63 +21,6 @@ public static class AgentAdminEndpoints
             .WithSummary("Отозвать Agent и его credentials");
 
         return endpoints;
-    }
-
-    private static async Task<IResult> CreateEnrollmentTokenAsync(
-        Guid employeeId,
-        CreateEnrollmentTokenRequest request,
-        HttpContext httpContext,
-        MonitoringDbContext dbContext,
-        AuditWriter auditWriter,
-        TimeProvider timeProvider,
-        CancellationToken cancellationToken)
-    {
-        if (request.ExpiresInHours is < 1 or > 168)
-        {
-            return Results.ValidationProblem(new Dictionary<string, string[]>
-            {
-                [nameof(request.ExpiresInHours)] = ["Срок действия должен быть от 1 до 168 часов."],
-            });
-        }
-
-        var employee = await dbContext.Employees.AsNoTracking()
-            .SingleOrDefaultAsync(item => item.Id == employeeId, cancellationToken);
-        if (employee is null)
-        {
-            return Results.NotFound();
-        }
-
-        if (!employee.IsActive)
-        {
-            return Results.Conflict(new { message = "Нельзя зарегистрировать Agent для неактивного сотрудника." });
-        }
-
-        var rawToken = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
-        var now = timeProvider.GetUtcNow();
-        var entity = new AgentEnrollmentToken
-        {
-            EmployeeId = employeeId,
-            TokenHash = AgentCredentialService.Hash(rawToken),
-            ExpiresAtUtc = now.AddHours(request.ExpiresInHours),
-            CreatedByUserId = httpContext.User.GetRequiredUserId(),
-            CreatedAtUtc = now,
-            UpdatedAtUtc = now,
-        };
-        dbContext.AgentEnrollmentTokens.Add(entity);
-        auditWriter.Add(
-            httpContext,
-            "agent.enrollment_token.created",
-            "Employee",
-            employeeId.ToString(),
-            entity.CreatedByUserId,
-            new { tokenId = entity.Id, entity.ExpiresAtUtc });
-        await dbContext.SaveChangesAsync(cancellationToken);
-
-        return Results.Ok(new EnrollmentTokenResponse(
-            entity.Id,
-            employeeId,
-            rawToken,
-            entity.ExpiresAtUtc));
     }
 
     private static async Task<IResult> GetComputersAsync(

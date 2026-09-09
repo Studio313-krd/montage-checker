@@ -7,6 +7,7 @@ namespace MontageMonitor.Agent.Configuration;
 
 internal sealed class AgentSettingsStore
 {
+    private const int CurrentAuthenticationSchemaVersion = 1;
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("MontageMonitor.Agent/v1");
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private readonly object _gate = new();
@@ -26,13 +27,25 @@ internal sealed class AgentSettingsStore
                 var settings = JsonSerializer.Deserialize<AgentSettings>(json, JsonOptions);
                 if (settings is null || settings.AgentId == Guid.Empty ||
                     settings.EmployeeId == Guid.Empty || settings.ComputerId == Guid.Empty ||
-                    string.IsNullOrWhiteSpace(settings.ServerBaseUrl) ||
                     string.IsNullOrWhiteSpace(settings.ProtectedDeviceAccessToken))
                 {
                     return null;
                 }
 
                 _ = GetDeviceAccessToken(settings);
+                var changed = false;
+                if (settings.AuthenticationSchemaVersion < CurrentAuthenticationSchemaVersion)
+                {
+                    ClearOperatorSessionValues(settings);
+                    settings.AuthenticationSchemaVersion = CurrentAuthenticationSchemaVersion;
+                    changed = true;
+                }
+
+                if (changed)
+                {
+                    Save(settings);
+                }
+
                 return settings;
             }
             catch (Exception exception) when (
@@ -44,24 +57,23 @@ internal sealed class AgentSettingsStore
         }
     }
 
-    public AgentSettings SaveEnrollment(
-        string serverBaseUrl,
-        AgentEnrollmentResponse enrollment)
+    public AgentSettings SaveLogin(AgentLoginResponse login)
     {
         var protectedToken = ProtectedData.Protect(
-            Encoding.UTF8.GetBytes(enrollment.DeviceAccessToken),
+            Encoding.UTF8.GetBytes(login.DeviceAccessToken),
             Entropy,
             DataProtectionScope.CurrentUser);
         var settings = new AgentSettings
         {
-            ServerBaseUrl = serverBaseUrl.TrimEnd('/'),
-            AgentId = enrollment.AgentId,
-            EmployeeId = enrollment.EmployeeId,
-            ComputerId = enrollment.ComputerId,
+            AgentId = login.AgentId,
+            EmployeeId = login.EmployeeId,
+            ComputerId = login.ComputerId,
             ProtectedDeviceAccessToken = Convert.ToBase64String(protectedToken),
-            CredentialExpiresAtUtc = enrollment.ExpiresAtUtc,
+            CredentialExpiresAtUtc = login.ExpiresAtUtc,
+            AuthenticationSchemaVersion = CurrentAuthenticationSchemaVersion,
         };
 
+        SaveOperatorSessionValues(settings, login.OperatorSession);
         Save(settings);
         return settings;
     }
@@ -81,19 +93,13 @@ internal sealed class AgentSettingsStore
 
     public void SaveOperatorSession(AgentSettings settings, AgentOperatorSessionResponse session)
     {
-        settings.OperatorSessionId = session.SessionId;
-        settings.SelectedEmployeeId = session.EmployeeId;
-        settings.SelectedEmployeeName = session.EmployeeName;
-        settings.OperatorSessionExpiresAtUtc = session.ExpiresAtUtc;
+        SaveOperatorSessionValues(settings, session);
         Save(settings);
     }
 
     public void ClearOperatorSession(AgentSettings settings)
     {
-        settings.OperatorSessionId = null;
-        settings.SelectedEmployeeId = null;
-        settings.SelectedEmployeeName = null;
-        settings.OperatorSessionExpiresAtUtc = null;
+        ClearOperatorSessionValues(settings);
         Save(settings);
     }
 
@@ -119,5 +125,23 @@ internal sealed class AgentSettingsStore
                 new UTF8Encoding(false));
             File.Move(temporaryFile, AgentPaths.SettingsFile, true);
         }
+    }
+
+    private static void SaveOperatorSessionValues(
+        AgentSettings settings,
+        AgentOperatorSessionResponse session)
+    {
+        settings.OperatorSessionId = session.SessionId;
+        settings.SelectedEmployeeId = session.EmployeeId;
+        settings.SelectedEmployeeName = session.EmployeeName;
+        settings.OperatorSessionExpiresAtUtc = session.ExpiresAtUtc;
+    }
+
+    private static void ClearOperatorSessionValues(AgentSettings settings)
+    {
+        settings.OperatorSessionId = null;
+        settings.SelectedEmployeeId = null;
+        settings.SelectedEmployeeName = null;
+        settings.OperatorSessionExpiresAtUtc = null;
     }
 }

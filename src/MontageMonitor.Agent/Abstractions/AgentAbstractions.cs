@@ -94,13 +94,9 @@ internal interface IAgentApiClient : IDisposable
         Guid? operatorSessionId,
         CancellationToken cancellationToken);
 
-    Task<AgentOperatorOptionsResponse?> GetOperatorOptionsAsync(
-        Guid? operatorSessionId,
-        CancellationToken cancellationToken);
-
     Task<AgentOperatorSessionResponse> StartOperatorSessionAsync(
-        Guid employeeId,
-        string pin,
+        string login,
+        string password,
         CancellationToken cancellationToken);
 
     Task<HeartbeatSendResult> UploadScreenshotAsync(

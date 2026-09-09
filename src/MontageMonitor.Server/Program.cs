@@ -138,7 +138,7 @@ if (hasWebClient)
 
 await app.ApplyDatabaseMigrationsAsync();
 await app.BootstrapOwnerAsync();
-await app.ProvisionEmployeeOperatorPinsAsync();
+await app.ProvisionEmployeeAgentPasswordsAsync();
 await app.RunAsync();
 
 public partial class Program;

@@ -1,13 +1,13 @@
 # PostgreSQL schema
 
-Схема MontageMonitor создаётся EF Core migrations `InitialCreate`, `AddAgentEnrollmentTokens`, `AddUserAuthenticationState`, `AddAgentHeartbeatDetails`, `AddActivityAggregationIntegrity`, `AddRenderDetection`, `AddProxyDetection`, `AddScreenshotCapture` и `AddDailyOperatorSelection`. Имена таблиц, колонок, ключей и индексов используют `snake_case`. Все моменты времени хранятся как PostgreSQL `timestamp with time zone`; .NET-модели используют `DateTimeOffset` и UTC.
+Схема MontageMonitor создаётся последовательными EF Core migrations; актуальная миграция `RemoveAgentEnrollmentTokens` удаляет устаревшие одноразовые коды после перехода на вход Agent по логину и паролю. Имена таблиц, колонок, ключей и индексов используют `snake_case`. Все моменты времени хранятся как PostgreSQL `timestamp with time zone`; .NET-модели используют `DateTimeOffset` и UTC.
 
 ## Таблицы
 
 | Группа | Таблицы | Назначение |
 | --- | --- | --- |
 | Пользователи | `users`, `refresh_tokens`, `user_employee_access` | Авторизация, роли, безопасные refresh token hashes и ограничения видимости сотрудников |
-| Организация | `employees`, `computers`, `agents`, `agent_credentials`, `agent_enrollment_tokens` | Сотрудники, рабочие станции, одноразовая регистрация и device-specific credentials |
+| Организация | `employees`, `computers`, `agents`, `agent_credentials`, `agent_operator_sessions` | Сотрудники, рабочие станции, device-specific credentials и ежедневные входы монтажёров |
 | Приём данных | `heartbeats`, `activity_events` | Срезы состояния и идемпотентные UUID-события с `jsonb` payload |
 | Интервалы | `application_sessions`, `human_state_sessions`, `machine_state_sessions` | Foreground application и независимые human/machine интервалы |
 | Производство | `render_sessions` | Render, proxy и background sessions с confidence/reason |
@@ -21,10 +21,10 @@
 - `heartbeats.event_id` имеет unique index; приём использует `ON CONFLICT DO NOTHING`, поэтому даже одновременные повторы UUID не создают дубликат.
 - `screenshots.event_id` имеет unique index; повторная multipart-загрузка возвращает существующий результат, не создавая второй файл или metadata.
 - Heartbeat хранит версию Agent, пользователя и имя Windows-компьютера, foreground process/path/title, idle и загрузку CPU/RAM. Для Render/Proxy дополнительно сохраняются process CPU/working set/I/O, дочерние процессы, выходной путь/размер, confidence и reason; GPU используется только Render и остаётся nullable.
-- `employees.operator_pin_protected` хранит четырёхзначный PIN в обратимо зашифрованном ASP.NET Core Data Protection payload. Ключи находятся в отдельном постоянном Docker volume и не попадают в PostgreSQL или Git.
+- `employees.operator_pin_protected` — сохранённое для совместимости имя колонки, которая хранит четырёхзначный пароль Agent в обратимо зашифрованном ASP.NET Core Data Protection payload. Ключи находятся в отдельном постоянном Docker volume и не попадают в PostgreSQL или Git.
 - `agent_operator_sessions` связывает device Agent, физический компьютер и фактически выбранного сотрудника на интервал до ежедневной границы 06:00. Исторические heartbeat и sessions продолжают хранить `employee_id`, поэтому последующее переключение не меняет прошлые данные.
 - Имя компьютера уникально для сотрудника без учёта регистра через `computers.normalized_name`.
-- Enrollment token хранится только как hash, имеет срок действия и отметку однократного использования.
+- Одноразовые enrollment tokens больше не используются; таблица удаляется миграцией `RemoveAgentEnrollmentTokens`.
 - Логины пользователей и сотрудников уникальны в нормализованном виде.
 - Для sessions база проверяет `ended_at_utc >= started_at_utc`.
 - Частичные unique indexes разрешают не более одного открытого application-, human-, machine- и render-интервала на компьютер.

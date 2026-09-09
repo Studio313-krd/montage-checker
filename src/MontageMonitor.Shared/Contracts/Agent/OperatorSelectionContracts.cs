@@ -7,7 +7,11 @@ public sealed record AgentOperatorOptionsResponse(
     AgentOperatorSessionResponse? CurrentSession,
     DateTimeOffset ServerTimeUtc);
 
-public sealed record StartAgentOperatorSessionRequest(Guid EmployeeId, string Pin);
+public sealed record StartAgentOperatorSessionRequest(
+    string? Login,
+    string? Password,
+    Guid? EmployeeId = null,
+    string? Pin = null);
 
 public sealed record AgentOperatorSessionResponse(
     Guid SessionId,

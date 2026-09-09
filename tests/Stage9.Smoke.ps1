@@ -110,9 +110,12 @@ function New-DashboardEmployee {
         screenshotIntervalMinutes = 5
         idleThresholdSeconds = 300
     } $AdminHeaders
-    $token = Invoke-Json POST "/api/admin/employees/$($employee.id)/agent-enrollment" @{ expiresInHours = 1 } $AdminHeaders
-    $enrollment = Invoke-Json POST "/api/agent/enroll" @{
-        enrollmentToken = $token.enrollmentToken
+    $password = [string](Invoke-Json GET "/api/admin/employees/agent-passwords" $null $AdminHeaders |
+        Where-Object { $_.employeeId -eq $employee.id } |
+        Select-Object -ExpandProperty password)
+    $agentLogin = Invoke-Json POST "/api/agent/login" @{
+        login = $employee.login
+        password = $password
         machineName = "EDIT-$($employee.name.Split(' ')[0].ToUpperInvariant())"
         windowsUser = $loginPart
         operatingSystem = "Windows 11 Pro"
@@ -121,9 +124,9 @@ function New-DashboardEmployee {
     $startedAt = [DateTimeOffset]::UtcNow.AddMinutes(-$StartedMinutesAgo).ToString("O")
     $heartbeatBody = @{
         eventId = [guid]::NewGuid()
-        agentId = $enrollment.agentId
-        employeeId = $enrollment.employeeId
-        computerId = $enrollment.computerId
+        agentId = $agentLogin.agentId
+        employeeId = $agentLogin.employeeId
+        computerId = $agentLogin.computerId
         agentVersion = "0.8.0"
         timestampUtc = $startedAt
         windowsUser = $loginPart
@@ -171,14 +174,14 @@ function New-DashboardEmployee {
             fileNameMatched = $true
         }
     }
-    $deviceHeaders = @{ Authorization = "Device $($enrollment.deviceAccessToken)" }
+    $deviceHeaders = @{ Authorization = "Device $($agentLogin.deviceAccessToken)" }
     $null = Invoke-Json POST "/api/agent/heartbeat" $heartbeatBody $deviceHeaders
 
-    Send-Screenshot $enrollment.deviceAccessToken @{
+    Send-Screenshot $agentLogin.deviceAccessToken @{
         eventId = [guid]::NewGuid()
-        agentId = $enrollment.agentId
-        employeeId = $enrollment.employeeId
-        computerId = $enrollment.computerId
+        agentId = $agentLogin.agentId
+        employeeId = $agentLogin.employeeId
+        computerId = $agentLogin.computerId
         timestampUtc = [DateTimeOffset]::UtcNow.ToString("O")
         screenIndex = 0
         width = 640
@@ -189,7 +192,7 @@ function New-DashboardEmployee {
         machineState = $MachineState
     } $ScreenshotBytes
 
-    [pscustomobject]@{ Employee = $employee; Enrollment = $enrollment; StartedAt = $startedAt }
+    [pscustomobject]@{ Employee = $employee; AgentLogin = $agentLogin; StartedAt = $startedAt }
 }
 
 $login = Invoke-Json POST "/api/auth/login" @{ login = $OwnerLogin; password = $OwnerPassword }
@@ -202,7 +205,7 @@ $anna = New-DashboardEmployee "Анна Морозова" "Цветокорре�
 $sergey = New-DashboardEmployee "Сергей Орлов" "Монтаж" "explorer.exe" "Материалы проекта" "Idle" "Normal" 12 (New-DashboardJpeg "OFFLINE / LAST FRAME" ([System.Drawing.Color]::FromArgb(93, 106, 113))) $adminHeaders $suffix
 
 $offlineAt = [DateTimeOffset]::UtcNow.AddMinutes(-12).ToString("O")
-$sql = "UPDATE agents SET status = 'Offline', last_seen_at_utc = '$offlineAt' WHERE id = '$($sergey.Enrollment.agentId)'; UPDATE computers SET last_heartbeat_at_utc = '$offlineAt', last_online_at_utc = '$offlineAt' WHERE id = '$($sergey.Enrollment.computerId)';"
+$sql = "UPDATE agents SET status = 'Offline', last_seen_at_utc = '$offlineAt' WHERE id = '$($sergey.AgentLogin.agentId)'; UPDATE computers SET last_heartbeat_at_utc = '$offlineAt', last_online_at_utc = '$offlineAt' WHERE id = '$($sergey.AgentLogin.computerId)';"
 docker exec $PostgresContainer psql -U $DatabaseUser -d $DatabaseName -v ON_ERROR_STOP=1 -c $sql | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Не удалось подготовить offline-карточку." }
 

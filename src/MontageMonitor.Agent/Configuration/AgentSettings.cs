@@ -4,8 +4,6 @@ namespace MontageMonitor.Agent.Configuration;
 
 internal sealed class AgentSettings
 {
-    public required string ServerBaseUrl { get; set; }
-
     public Guid AgentId { get; set; }
 
     public Guid EmployeeId { get; set; }
@@ -23,6 +21,8 @@ internal sealed class AgentSettings
     public string? SelectedEmployeeName { get; set; }
 
     public DateTimeOffset? OperatorSessionExpiresAtUtc { get; set; }
+
+    public int AuthenticationSchemaVersion { get; set; }
 
     public long ConfigVersion { get; set; }
 

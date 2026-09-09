@@ -84,31 +84,6 @@ public sealed class AgentCredentialConfiguration : IEntityTypeConfiguration<Agen
     }
 }
 
-public sealed class AgentEnrollmentTokenConfiguration
-    : IEntityTypeConfiguration<AgentEnrollmentToken>
-{
-    public void Configure(EntityTypeBuilder<AgentEnrollmentToken> builder)
-    {
-        builder.ToTable("agent_enrollment_tokens", table =>
-            table.HasCheckConstraint(
-                "ck_agent_enrollment_tokens_expiry",
-                "expires_at_utc > created_at_utc"));
-        builder.HasKey(x => x.Id);
-        builder.Property(x => x.TokenHash).HasMaxLength(128).IsRequired();
-        builder.Property(x => x.UsedAtUtc).IsConcurrencyToken();
-        builder.Property(x => x.CreatedAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
-        builder.Property(x => x.UpdatedAtUtc).HasDefaultValueSql("CURRENT_TIMESTAMP");
-        builder.HasOne<Employee>().WithMany().HasForeignKey(x => x.EmployeeId)
-            .OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne<User>().WithMany().HasForeignKey(x => x.CreatedByUserId)
-            .OnDelete(DeleteBehavior.SetNull);
-        builder.HasOne<AgentDevice>().WithMany().HasForeignKey(x => x.ConsumedByAgentId)
-            .OnDelete(DeleteBehavior.SetNull);
-        builder.HasIndex(x => x.TokenHash).IsUnique();
-        builder.HasIndex(x => new { x.EmployeeId, x.ExpiresAtUtc, x.UsedAtUtc });
-    }
-}
-
 public sealed class AgentOperatorSessionConfiguration
     : IEntityTypeConfiguration<AgentOperatorSession>
 {
