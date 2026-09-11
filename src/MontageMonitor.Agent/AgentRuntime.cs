@@ -27,6 +27,8 @@ internal sealed class AgentRuntime(
     private MachineWorkDetection _machineDetection = MachineWorkDetection.Normal;
     private MachineState? _lastQueuedMachineState;
     private bool _operatorSelectionRequired;
+    private AgentConnectionState _connectionState = AgentConnectionState.Starting;
+    private string? _connectionDetails;
 
     public event EventHandler<AgentRuntimeStatus>? StatusChanged;
     public event EventHandler<Exception>? FatalError;
@@ -73,7 +75,7 @@ internal sealed class AgentRuntime(
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
         while (!cancellationToken.IsCancellationRequested)
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = settings.Clock.GetUtcNow();
             if (!settings.HasValidOperatorSession(now))
             {
                 Publish(
@@ -238,7 +240,7 @@ internal sealed class AgentRuntime(
             {
                 case HeartbeatSendResult.Sent:
                     await eventQueue.MarkSentAsync(queued.EventId, cancellationToken);
-                    _lastSyncAtUtc = DateTimeOffset.UtcNow;
+                    _lastSyncAtUtc = settings.Clock.GetUtcNow();
                     Publish(
                         AgentConnectionState.Connected,
                         _lastSyncAtUtc,
@@ -249,22 +251,26 @@ internal sealed class AgentRuntime(
                     await eventQueue.MarkSentAsync(queued.EventId, cancellationToken);
                     Publish(
                         AgentConnectionState.Offline,
-                        null,
+                        _lastSyncAtUtc,
                         await CountQueuedAsync(cancellationToken),
-                        "Сервер отклонил один heartbeat.");
+                        apiClient.LastErrorDetails ?? "Сервер отклонил один heartbeat.");
                     break;
                 case HeartbeatSendResult.Unauthorized:
                     Publish(
                         AgentConnectionState.AuthenticationRequired,
-                        null,
-                        await CountQueuedAsync(cancellationToken));
+                        _lastSyncAtUtc,
+                        await CountQueuedAsync(cancellationToken),
+                        apiClient.LastErrorDetails);
                     return;
                 case HeartbeatSendResult.OperatorSelectionRequired:
-                    _operatorSelectionRequired = true;
-                    Publish(
-                        AgentConnectionState.OperatorSelectionRequired,
-                        _lastSyncAtUtc,
-                        await CountQueuedAsync(cancellationToken));
+                    await eventQueue.MarkFailedAsync(queued.EventId, queued.AttemptCount, cancellationToken);
+                    if (queued.Payload.OperatorSessionId != settings.OperatorSessionId)
+                    {
+                        // Keep historical data for diagnosis/retry, but let the current shift upload.
+                        continue;
+                    }
+
+                    await RequireOperatorSelectionAsync(cancellationToken);
                     return;
                 default:
                     await eventQueue.MarkFailedAsync(
@@ -273,8 +279,9 @@ internal sealed class AgentRuntime(
                         cancellationToken);
                     Publish(
                         AgentConnectionState.Offline,
-                        null,
-                        await CountQueuedAsync(cancellationToken));
+                        _lastSyncAtUtc,
+                        await CountQueuedAsync(cancellationToken),
+                        apiClient.LastErrorDetails ?? "Не удалось отправить heartbeat. Повторим автоматически.");
                     return;
             }
         }
@@ -287,28 +294,31 @@ internal sealed class AgentRuntime(
             {
                 case HeartbeatSendResult.Sent:
                     await screenshotQueue.MarkSentAsync(screenshot.EventId, cancellationToken);
-                    _lastSyncAtUtc = DateTimeOffset.UtcNow;
+                    _lastSyncAtUtc = settings.Clock.GetUtcNow();
                     break;
                 case HeartbeatSendResult.Rejected:
                     await screenshotQueue.MarkSentAsync(screenshot.EventId, cancellationToken);
                     Publish(
                         AgentConnectionState.Offline,
-                        null,
+                        _lastSyncAtUtc,
                         await CountQueuedAsync(cancellationToken),
-                        "Сервер отклонил один скриншот.");
+                        apiClient.LastErrorDetails ?? "Сервер отклонил один скриншот.");
                     break;
                 case HeartbeatSendResult.Unauthorized:
                     Publish(
                         AgentConnectionState.AuthenticationRequired,
-                        null,
-                        await CountQueuedAsync(cancellationToken));
+                        _lastSyncAtUtc,
+                        await CountQueuedAsync(cancellationToken),
+                        apiClient.LastErrorDetails);
                     return;
                 case HeartbeatSendResult.OperatorSelectionRequired:
-                    _operatorSelectionRequired = true;
-                    Publish(
-                        AgentConnectionState.OperatorSelectionRequired,
-                        _lastSyncAtUtc,
-                        await CountQueuedAsync(cancellationToken));
+                    await screenshotQueue.MarkFailedAsync(screenshot.EventId, screenshot.AttemptCount, cancellationToken);
+                    if (screenshot.Metadata.OperatorSessionId != settings.OperatorSessionId)
+                    {
+                        continue;
+                    }
+
+                    await RequireOperatorSelectionAsync(cancellationToken);
                     return;
                 default:
                     await screenshotQueue.MarkFailedAsync(
@@ -317,16 +327,31 @@ internal sealed class AgentRuntime(
                         cancellationToken);
                     Publish(
                         AgentConnectionState.Offline,
-                        null,
-                        await CountQueuedAsync(cancellationToken));
+                        _lastSyncAtUtc,
+                        await CountQueuedAsync(cancellationToken),
+                        apiClient.LastErrorDetails ?? "Не удалось отправить скриншот. Повторим автоматически.");
                     return;
             }
         }
 
         Publish(
-            AgentConnectionState.Connected,
+            _connectionState,
             _lastSyncAtUtc,
-            await CountQueuedAsync(cancellationToken));
+            await CountQueuedAsync(cancellationToken),
+            _connectionDetails);
+    }
+
+    private async Task RequireOperatorSelectionAsync(CancellationToken cancellationToken)
+    {
+        _operatorSelectionRequired = true;
+        // The tray checks these same settings before opening the selection dialog.
+        // Invalidate first: a server rejection overrides the locally cached expiry.
+        settings.OperatorSessionExpiresAtUtc = null;
+        Publish(
+            AgentConnectionState.OperatorSelectionRequired,
+            _lastSyncAtUtc,
+            await CountQueuedAsync(cancellationToken),
+            apiClient.LastErrorDetails ?? "Сервер отклонил текущую смену. Выберите сотрудника заново.");
     }
 
     private async Task<int> CountQueuedAsync(CancellationToken cancellationToken) =>
@@ -337,13 +362,17 @@ internal sealed class AgentRuntime(
         AgentConnectionState state,
         DateTimeOffset? lastSyncAtUtc,
         int queuedCount,
-        string? details = null) =>
+        string? details = null)
+    {
+        _connectionState = state;
+        _connectionDetails = details;
         StatusChanged?.Invoke(this, new AgentRuntimeStatus(
             state,
             lastSyncAtUtc,
             queuedCount,
             _machineDetection.MachineState,
             details));
+    }
 }
 
 internal sealed record MachineWorkDetection(

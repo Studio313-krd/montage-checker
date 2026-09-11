@@ -216,6 +216,19 @@ $firstOperatorSession = Invoke-Json POST "/api/agent/operator-session" @{
 } $firstDeviceHeaders
 Assert-True ($firstOperatorSession.employeeId -eq $second.Employee.id) "общий ПК не переключился на выбранного сотрудника"
 $heartbeat.operatorSessionId = $firstOperatorSession.sessionId
+$clockSkewHeartbeat = $heartbeat.Clone()
+$clockSkewHeartbeat.eventId = [guid]::NewGuid()
+$clockSkewHeartbeat.agentVersion = "0.10.3"
+$confirmedStart = [DateTimeOffset]::Parse($firstOperatorSession.startedAtUtc)
+$clockSkewHeartbeat.timestampUtc = $confirmedStart.AddSeconds(-5).ToString("O")
+$clockSkewStatus = Get-HttpStatus POST "/api/agent/heartbeat" $clockSkewHeartbeat $firstDeviceHeaders
+Assert-True ($clockSkewStatus -eq 428) "heartbeat до начала подтверждённой смены должен воспроизводить HTTP 428"
+$clockSkewHeartbeat.timestampUtc = $confirmedStart.ToString("O")
+$correctedClockAccepted = Invoke-Json POST "/api/agent/heartbeat" $clockSkewHeartbeat $firstDeviceHeaders
+Assert-True ($correctedClockAccepted.eventId -eq $clockSkewHeartbeat.eventId) "heartbeat с серверным временем начала смены должен приниматься без нового входа"
+$clockDashboard = Invoke-Json GET "/api/dashboard" $null $adminHeaders
+$clockEmployee = @($clockDashboard.employees | Where-Object { $_.employeeId -eq $second.Employee.id })
+Assert-True ($clockEmployee.Count -eq 1 -and $clockEmployee[0].isOnline) "после исправления времени сотрудник должен отображаться Online"
 $heartbeat.timestampUtc = [DateTimeOffset]::UtcNow.ToString("O")
 $accepted = Invoke-Json POST "/api/agent/heartbeat" $heartbeat $firstDeviceHeaders
 $duplicate = Invoke-Json POST "/api/agent/heartbeat" $heartbeat $firstDeviceHeaders
@@ -287,6 +300,8 @@ Assert-True ($excelStatus -eq 403) "VIEWER не должен скачивать 
     HeartbeatRows = [int]$heartbeatCount.Trim()
     ForeignDuplicateStatus = $foreignDuplicateStatus
     MissingOperatorStatus = $missingOperatorStatus
+    ClockSkewStatus = $clockSkewStatus
+    CorrectedClockStatus = "accepted"
     WrongPasswordStatus = $wrongPasswordStatus
     LegacyAgentStatus = "accepted"
     ViewerEmployeeCount = $visibleEmployees.Count

@@ -18,6 +18,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AgentSettingsStore _settingsStore = new();
     private readonly ContextMenuStrip _menu;
     private readonly ToolStripMenuItem _statusItem;
+    private readonly ToolStripMenuItem _detailsItem;
     private readonly ToolStripMenuItem _lastSyncItem;
     private readonly ToolStripMenuItem _queueItem;
     private readonly ToolStripMenuItem _machineStateItem;
@@ -38,6 +39,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext()
     {
         _statusItem = DisabledItem("Статус: запуск");
+        _detailsItem = DisabledItem("Причина: —");
+        _detailsItem.Visible = false;
         _lastSyncItem = DisabledItem("Последняя синхронизация: —");
         _queueItem = DisabledItem("В очереди: 0");
         _machineStateItem = DisabledItem("Машинная работа: норма");
@@ -50,10 +53,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         var exitItem = new ToolStripMenuItem("Выход");
         exitItem.Click += async (_, _) => await RequestExitAsync();
+        var diagnosticsItem = new ToolStripMenuItem("Открыть журнал диагностики…");
+        diagnosticsItem.Click += (_, _) => OpenDiagnostics();
 
         _menu = new ContextMenuStrip();
         _menu.Items.AddRange([
             _statusItem,
+            _detailsItem,
             _lastSyncItem,
             _queueItem,
             _machineStateItem,
@@ -62,6 +68,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             new ToolStripSeparator(),
             _switchOperatorItem,
             _configureItem,
+            diagnosticsItem,
             new ToolStripSeparator(),
             exitItem,
         ]);
@@ -102,7 +109,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _operatorTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
         _operatorTimer.Tick += async (_, _) =>
         {
-            if (_settings is not null && !_settings.HasValidOperatorSession(DateTimeOffset.UtcNow))
+            if (_settings is not null && !_settings.HasValidOperatorSession(_settings.Clock.GetUtcNow()))
             {
                 await EnsureOperatorSelectionAsync();
             }
@@ -126,7 +133,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        if (_settings.HasValidOperatorSession(DateTimeOffset.UtcNow))
+        try
+        {
+            using var apiClient = new AgentApiClient(_settingsStore.GetDeviceAccessToken(_settings));
+            var options = await apiClient.GetOperatorOptionsAsync(CancellationToken.None);
+            _settingsStore.SaveServerTime(_settings, options.ServerTimeUtc);
+            LogClockSynchronization(_settings);
+        }
+        catch (AgentAuthenticationRequiredException)
+        {
+            await ConfigureAsync();
+            return;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or OperatorSelectionException)
+        {
+            AgentDiagnosticLog.Write($"Clock synchronization unavailable: {exception.GetType().Name}; using saved offset.");
+        }
+
+        if (_settings.HasValidOperatorSession(_settings.Clock.GetUtcNow()))
         {
             StartRuntime(_settings);
         }
@@ -185,6 +209,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             var newSettings = _settingsStore.SaveLogin(dialog.LoginResult);
+            LogClockSynchronization(newSettings);
             if (previousSettings is not null &&
                 (previousSettings.AgentId != newSettings.AgentId ||
                  previousSettings.EmployeeId != newSettings.EmployeeId ||
@@ -219,14 +244,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async Task EnsureOperatorSelectionAsync(bool force = false)
+    private async Task EnsureOperatorSelectionAsync(bool force = false, string? reason = null)
     {
         if (_operatorSelectionOpen || _settings is null)
         {
             return;
         }
 
-        if (!force && _settings.HasValidOperatorSession(DateTimeOffset.UtcNow))
+        if (!force && _settings.HasValidOperatorSession(_settings.Clock.GetUtcNow()))
         {
             if (_runtime is null)
             {
@@ -246,7 +271,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             var deviceAccessToken = _settingsStore.GetDeviceAccessToken(_settings);
             using var apiClient = new AgentApiClient(deviceAccessToken);
-            using var dialog = new OperatorSelectionDialog(apiClient);
+            using var dialog = new OperatorSelectionDialog(apiClient, reason);
             _ = dialog.ShowDialog();
             if (dialog.AuthenticationRequired)
             {
@@ -265,6 +290,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             else
             {
                 _settingsStore.SaveOperatorSession(_settings, dialog.Session);
+                LogClockSynchronization(_settings);
                 _operatorItem.Text = $"Монтажёр: {dialog.Session.EmployeeName}";
                 StartRuntime(_settings);
             }
@@ -296,7 +322,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void StartRuntime(AgentSettings settings)
     {
-        if (!settings.HasValidOperatorSession(DateTimeOffset.UtcNow))
+        if (!settings.HasValidOperatorSession(settings.Clock.GetUtcNow()))
         {
             _ = EnsureOperatorSelectionAsync();
             return;
@@ -339,10 +365,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void RuntimeStatusChanged(object? sender, AgentRuntimeStatus status) =>
         PostToUi(() =>
         {
+            if (!ReferenceEquals(sender, _runtime))
+            {
+                return;
+            }
+
             ApplyStatus(status);
             if (status.State == AgentConnectionState.OperatorSelectionRequired)
             {
-                _ = EnsureOperatorSelectionAsync();
+                _ = EnsureOperatorSelectionAsync(reason: status.Details);
             }
             else if (status.State == AgentConnectionState.AuthenticationRequired)
             {
@@ -353,12 +384,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void RuntimeFatalError(object? sender, Exception exception) =>
         PostToUi(() =>
         {
+            AgentDiagnosticLog.Failure(exception);
             Environment.ExitCode = 1;
             ExitThread();
         });
 
     private void ApplyStatus(AgentRuntimeStatus status)
     {
+        AgentDiagnosticLog.Status(status);
+        _detailsItem.Text = status.Details ?? "Причина: —";
+        _detailsItem.Visible = !string.IsNullOrWhiteSpace(status.Details);
         _statusItem.Text = status.State switch
         {
             AgentConnectionState.Starting => "Статус: запуск",
@@ -391,12 +426,36 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void SetUnconfiguredStatus()
     {
+        _detailsItem.Visible = false;
         _statusItem.Text = "Статус: требуется настройка";
         _lastSyncItem.Text = "Последняя синхронизация: —";
         _queueItem.Text = "В очереди: —";
         _machineStateItem.Text = "Машинная работа: —";
         _operatorItem.Text = "Монтажёр: не выбран";
         _notifyIcon.Text = "MontageMonitor — требуется настройка";
+    }
+
+    private static void LogClockSynchronization(AgentSettings settings) =>
+        AgentDiagnosticLog.Write(
+            $"Server clock synchronized; offsetSeconds={TimeSpan.FromTicks(settings.ServerClockOffsetTicks).TotalSeconds:F3}; " +
+            $"serverUtc={settings.Clock.GetUtcNow():O}; shiftExpiresUtc={settings.OperatorSessionExpiresAtUtc:O}");
+
+    private static void OpenDiagnostics()
+    {
+        try
+        {
+            AgentDiagnosticLog.Write($"Diagnostic log opened; Agent {AgentEnvironment.Version}");
+            var startInfo = new System.Diagnostics.ProcessStartInfo("notepad.exe")
+            {
+                UseShellExecute = false,
+            };
+            startInfo.ArgumentList.Add(AgentDiagnosticLog.FilePath);
+            using var process = System.Diagnostics.Process.Start(startInfo);
+        }
+        catch (Exception exception) when (exception is IOException or System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show($"Журнал: {AgentDiagnosticLog.FilePath}", "MontageMonitor");
+        }
     }
 
     private void PostToUi(Action action)

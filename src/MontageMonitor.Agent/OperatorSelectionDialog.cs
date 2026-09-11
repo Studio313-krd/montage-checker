@@ -15,6 +15,7 @@ internal sealed class OperatorSelectionDialog : Form
     private static readonly Color Error = Color.FromArgb(185, 68, 68);
 
     private readonly IAgentApiClient _apiClient;
+    private readonly string? _selectionReason;
     private readonly ComboBox _employeeComboBox;
     private readonly Button _refreshEmployeesButton;
     private readonly TextBox _passwordTextBox;
@@ -25,9 +26,10 @@ internal sealed class OperatorSelectionDialog : Form
     private bool _allowClose;
     private bool _busy;
 
-    public OperatorSelectionDialog(IAgentApiClient apiClient)
+    public OperatorSelectionDialog(IAgentApiClient apiClient, string? selectionReason = null)
     {
         _apiClient = apiClient;
+        _selectionReason = selectionReason;
         Text = "Кто сегодня работает? — MontageMonitor";
         Icon = AppBranding.Icon;
         WindowState = FormWindowState.Maximized;
@@ -365,9 +367,9 @@ internal sealed class OperatorSelectionDialog : Form
 
             SetStatus(
                 _employeeComboBox.Items.Count > 0
-                    ? "Выберите своё имя и введите выданный администратором пароль."
+                    ? _selectionReason ?? "Выберите своё имя и введите выданный администратором пароль."
                     : "Активных сотрудников нет. Обратитесь к администратору.",
-                _employeeComboBox.Items.Count > 0 ? Slate : Error);
+                _employeeComboBox.Items.Count > 0 && _selectionReason is null ? Slate : Error);
             _passwordTextBox.Focus();
         }
         catch (AgentAuthenticationRequiredException)

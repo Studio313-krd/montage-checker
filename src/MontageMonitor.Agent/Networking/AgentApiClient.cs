@@ -17,6 +17,8 @@ internal sealed class AgentApiClient : IAgentApiClient
 
     private readonly HttpClient _httpClient;
 
+    public string? LastErrorDetails { get; private set; }
+
     public AgentApiClient(string deviceAccessToken)
     {
         var handler = new HttpClientHandler
@@ -33,6 +35,11 @@ internal sealed class AgentApiClient : IAgentApiClient
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd($"MontageMonitor.Agent/{AgentEnvironment.Version}");
     }
 
+    internal AgentApiClient(HttpClient httpClient)
+    {
+        _httpClient = httpClient;
+    }
+
     public async Task<HeartbeatSendResult> SendHeartbeatAsync(
         HeartbeatRequest heartbeat,
         CancellationToken cancellationToken)
@@ -44,6 +51,7 @@ internal sealed class AgentApiClient : IAgentApiClient
                 heartbeat,
                 JsonOptions,
                 cancellationToken);
+            LastErrorDetails = await DescribeResponseAsync(response, "Heartbeat", cancellationToken);
             return response.StatusCode switch
             {
                 HttpStatusCode.OK => HeartbeatSendResult.Sent,
@@ -57,6 +65,7 @@ internal sealed class AgentApiClient : IAgentApiClient
         catch (Exception exception) when (
             exception is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
         {
+            LastErrorDetails = DescribeNetworkFailure(exception, "Heartbeat");
             return HeartbeatSendResult.RetryLater;
         }
     }
@@ -154,6 +163,7 @@ internal sealed class AgentApiClient : IAgentApiClient
         {
             if (!File.Exists(screenshot.LocalFilePath))
             {
+                LastErrorDetails = "Скриншот: локальный файл очереди отсутствует.";
                 return HeartbeatSendResult.Rejected;
             }
 
@@ -175,6 +185,7 @@ internal sealed class AgentApiClient : IAgentApiClient
                 "api/agent/screenshots",
                 multipart,
                 cancellationToken);
+            LastErrorDetails = await DescribeResponseAsync(response, "Скриншот", cancellationToken);
             return response.StatusCode switch
             {
                 HttpStatusCode.OK or HttpStatusCode.Created => HeartbeatSendResult.Sent,
@@ -190,9 +201,69 @@ internal sealed class AgentApiClient : IAgentApiClient
             exception is HttpRequestException or IOException or
             TaskCanceledException && !cancellationToken.IsCancellationRequested)
         {
+            LastErrorDetails = DescribeNetworkFailure(exception, "Скриншот");
             return HeartbeatSendResult.RetryLater;
         }
     }
+
+    private static async Task<string?> DescribeResponseAsync(
+        HttpResponseMessage response,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        if (response.StatusCode is HttpStatusCode.OK or HttpStatusCode.Created)
+        {
+            return null;
+        }
+
+        var reason = response.StatusCode switch
+        {
+            HttpStatusCode.BadRequest => "сервер отклонил данные",
+            HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => "доступ отклонён",
+            (HttpStatusCode)428 => "сервер не подтвердил смену для времени события",
+            HttpStatusCode.TooManyRequests => "слишком много запросов",
+            _ => "запрос не принят сервером",
+        };
+        var details = $"{operation}: HTTP {(int)response.StatusCode}, {reason}.";
+        if (response.StatusCode == HttpStatusCode.BadRequest &&
+            response.Content.Headers.ContentType?.MediaType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            try
+            {
+                using var document = await JsonDocument.ParseAsync(
+                    await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+                if (document.RootElement.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Object)
+                {
+                    // Record field names only; never copy payloads, credentials or arbitrary error bodies.
+                    var fields = errors.EnumerateObject().Take(8)
+                        .Select(item => new string(item.Name.Where(char.IsLetterOrDigit).Take(64).ToArray()));
+                    details += " Поля: " + string.Join(", ", fields) + ".";
+                }
+            }
+            catch (JsonException)
+            {
+                // The HTTP status still explains a malformed error response.
+            }
+        }
+
+        if (response.Headers.Date is { } serverDate)
+        {
+            var clockDifference = DateTimeOffset.UtcNow - serverDate;
+            if (Math.Abs(clockDifference.TotalSeconds) > 30)
+            {
+                details += $" Расхождение часов ПК и сервера: {clockDifference.TotalSeconds:F0} с. Проверьте время Windows.";
+            }
+        }
+
+        return details;
+    }
+
+    private static string DescribeNetworkFailure(Exception exception, string operation) => exception switch
+    {
+        TaskCanceledException => $"{operation}: сервер не ответил за отведённое время.",
+        HttpRequestException request => $"{operation}: ошибка соединения ({request.HttpRequestError}).",
+        _ => $"{operation}: ошибка чтения файла ({exception.GetType().Name}).",
+    };
 
     public void Dispose() => _httpClient.Dispose();
 

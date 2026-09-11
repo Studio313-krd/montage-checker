@@ -1,4 +1,5 @@
 using MontageMonitor.Shared.Contracts.Agent;
+using System.Text.Json.Serialization;
 
 namespace MontageMonitor.Agent.Configuration;
 
@@ -21,6 +22,11 @@ internal sealed class AgentSettings
     public string? SelectedEmployeeName { get; set; }
 
     public DateTimeOffset? OperatorSessionExpiresAtUtc { get; set; }
+
+    public long ServerClockOffsetTicks { get; set; }
+
+    [JsonIgnore]
+    public ServerClock Clock { get; set; } = new();
 
     public int AuthenticationSchemaVersion { get; set; }
 

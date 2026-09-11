@@ -17,18 +17,31 @@ internal static class Program
             return 0;
         }
 
+        AgentDiagnosticLog.Write($"Starting Agent {AgentEnvironment.Version}");
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (_, _) => Environment.Exit(1);
-        AppDomain.CurrentDomain.UnhandledException += (_, _) => Environment.ExitCode = 1;
+        Application.ThreadException += (_, eventArgs) =>
+        {
+            AgentDiagnosticLog.Failure(eventArgs.Exception);
+            Environment.Exit(1);
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
+        {
+            if (eventArgs.ExceptionObject is Exception exception)
+            {
+                AgentDiagnosticLog.Failure(exception);
+            }
+            Environment.ExitCode = 1;
+        };
 
         try
         {
             Application.Run(new TrayApplicationContext());
             return Environment.ExitCode;
         }
-        catch
+        catch (Exception exception)
         {
+            AgentDiagnosticLog.Failure(exception);
             return 1;
         }
     }

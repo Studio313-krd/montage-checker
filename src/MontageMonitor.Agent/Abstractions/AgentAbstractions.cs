@@ -86,6 +86,8 @@ internal interface ILocalEventQueue
 
 internal interface IAgentApiClient : IDisposable
 {
+    string? LastErrorDetails => null;
+
     Task<HeartbeatSendResult> SendHeartbeatAsync(
         HeartbeatRequest heartbeat,
         CancellationToken cancellationToken);

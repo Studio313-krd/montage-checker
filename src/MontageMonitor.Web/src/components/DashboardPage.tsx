@@ -35,6 +35,9 @@ function formatTimecode(startedAtUtc: string | null, now: Date): string {
 function formatMoment(value: string | null): string {
   if (!value) return 'ещё не было'
   return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
